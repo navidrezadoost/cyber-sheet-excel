@@ -23,7 +23,7 @@
     "@cyber-sheet/renderer-canvas": "^0.1.0"
   },
   "devDependencies": {
-    "@angular/core": "^21.2.11",
+    "@angular/core": "^22.1.0",
     "@angular/common": "^21.2.11",
     "@angular/platform-browser-dynamic": "^21.2.11",
     "jest-axe": "^10.0.0",
