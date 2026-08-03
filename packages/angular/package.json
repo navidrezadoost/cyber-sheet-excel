@@ -24,7 +24,7 @@
   },
   "devDependencies": {
     "@angular/core": "^21.2.11",
-    "@angular/common": "^21.2.11",
+    "@angular/common": "^22.1.0",
     "@angular/platform-browser-dynamic": "^21.2.11",
     "jest-axe": "^10.0.0",
     "zone.js": "^0.16.1"
