@@ -39,23 +39,23 @@
     "@fluentui/react-icons": "^2.0.325",
     "@smilodon/core": "^1.9.1-debug.0",
     "@smilodon/react": "^1.9.1-debug.0",
-    "fflate": "^0.8.2",
-    "react": "^19.2.5",
+    "fflate": "^0.8.3",
+    "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "vue": "^3.4.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.59.1",
+    "@playwright/test": "^1.60.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@types/jest": "^30.0.0",
-    "@types/node": "^25.6.0",
+    "@types/node": "^25.9.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^6.0.1",
+    "@vitejs/plugin-react": "^6.0.2",
     "jest": "^30.3.0",
     "jest-environment-jsdom": "^30.3.0",
     "ts-jest": "^29.4.9",
     "typescript": "^6.0.3",
-    "vite": "^8.0.11"
+    "vite": "^8.0.13"
   }
 }
