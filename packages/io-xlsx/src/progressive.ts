@@ -1,4 +1,4 @@
-import { Workbook, type CellStyle, type CellValue } from '@cyber-sheet/core';
+import { DEFAULT_WORKSHEET_COLS, DEFAULT_WORKSHEET_ROWS, Workbook, type CellStyle, type CellValue } from '@cyber-sheet/core';
 import { streamXLSX, type ImportOptions } from './import';
 import type { XLSXMetadata } from './LightweightParser';
 
@@ -44,6 +44,13 @@ export type ProgressiveXLSXSession = {
   done: Promise<void>;
   cancel: () => void;
 };
+
+function sheetDisplayDimensions(rows: number, cols: number): { rows: number; cols: number } {
+  return {
+    rows: Math.max(DEFAULT_WORKSHEET_ROWS, rows),
+    cols: Math.max(DEFAULT_WORKSHEET_COLS, cols),
+  };
+}
 
 export async function loadXlsxProgressivelyFromArrayBuffer(
   buffer: ArrayBuffer | Uint8Array,
@@ -151,7 +158,7 @@ async function loadProgressivelyOnMainThread(
 
   const dims = new Map([[first.value.sheetName, {
     rows: first.value.progress.total,
-    cols: Math.max(26, maxChunkCol(first.value.cells)),
+    cols: Math.max(DEFAULT_WORKSHEET_COLS, maxChunkCol(first.value.cells)),
   }]]);
   const metadata = {
     sheetNames: [first.value.sheetName],
@@ -167,7 +174,8 @@ async function loadProgressivelyOnMainThread(
     for await (const chunk of iterator) {
       const mapped = mapStreamChunk(chunk, options.chunkRows ?? 500);
       if (!workbook.getSheet(mapped.sheetName)) {
-        workbook.addSheet(mapped.sheetName, mapped.totalRows, Math.max(26, maxCellCol(mapped.cells))).beginProgressiveLoad(mapped.totalRows);
+        const displayDims = sheetDisplayDimensions(mapped.totalRows, maxCellCol(mapped.cells));
+        workbook.addSheet(mapped.sheetName, displayDims.rows, displayDims.cols).beginProgressiveLoad(displayDims.rows);
       }
       applyChunk(workbook, mapped);
       options.onChunk?.(mapped);
@@ -182,9 +190,10 @@ async function loadProgressivelyOnMainThread(
 function createProgressiveWorkbook(metadata: XLSXMetadata): Workbook {
   const workbook = new Workbook();
   metadata.sheetNames.forEach((sheetName) => {
-    const dims = metadata.sheetDimensions.get(sheetName) ?? { rows: 1000, cols: 26 };
-    const sheet = workbook.addSheet(sheetName, Math.max(1, dims.rows), Math.max(1, dims.cols));
-    sheet.beginProgressiveLoad(Math.max(1, dims.rows));
+    const dims = metadata.sheetDimensions.get(sheetName) ?? { rows: DEFAULT_WORKSHEET_ROWS, cols: DEFAULT_WORKSHEET_COLS };
+    const displayDims = sheetDisplayDimensions(dims.rows, dims.cols);
+    const sheet = workbook.addSheet(sheetName, displayDims.rows, displayDims.cols);
+    sheet.beginProgressiveLoad(displayDims.rows);
   });
   return workbook;
 }
@@ -199,8 +208,9 @@ function finishProgressiveWorkbook(workbook: Workbook | null): void {
 function applyChunk(workbook: Workbook, chunk: ProgressiveXLSXChunk): void {
   let sheet = workbook.getSheet(chunk.sheetName);
   if (!sheet) {
-    sheet = workbook.addSheet(chunk.sheetName, chunk.totalRows, Math.max(26, maxCellCol(chunk.cells)));
-    sheet.beginProgressiveLoad(chunk.totalRows);
+    const displayDims = sheetDisplayDimensions(chunk.totalRows, maxCellCol(chunk.cells));
+    sheet = workbook.addSheet(chunk.sheetName, displayDims.rows, displayDims.cols);
+    sheet.beginProgressiveLoad(displayDims.rows);
   }
 
   for (const cell of chunk.cells) {

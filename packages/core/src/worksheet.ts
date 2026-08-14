@@ -36,6 +36,9 @@ import {
 } from './headerFooter';
 export type { WorksheetSnapshot } from './persistence/SnapshotCodec';
 
+export const DEFAULT_WORKSHEET_ROWS = 5000;
+export const DEFAULT_WORKSHEET_COLS = 16384;
+
 export class Worksheet {
   readonly name: string;
   /** Cell store — ICellStore boundary; swap implementation without touching any other Worksheet code. */
@@ -96,7 +99,7 @@ export class Worksheet {
   private _inTransaction = false;
   private _pendingEvents: SheetEvents[] = [];
 
-  constructor(name: string, rows = 1000, cols = 26, engine?: IFormulaEngine, workbook?: any, spreadsheetEngine?: { isMutating(): boolean }) {
+  constructor(name: string, rows = DEFAULT_WORKSHEET_ROWS, cols = DEFAULT_WORKSHEET_COLS, engine?: IFormulaEngine, workbook?: any, spreadsheetEngine?: { isMutating(): boolean }) {
     this.name = name;
     this.rowCount = rows;
     this.colCount = cols;
@@ -1098,11 +1101,12 @@ export class Worksheet {
     const count = Math.min(addresses.length, values.length);
     for (let i = 0; i < count; i++) {
       const value = values[i];
-      if (Number.isNaN(value)) continue;
       const addr = addresses[i];
       const cell = this.cells.get(addr.row, addr.col);
       if (!cell?.formula) continue;
-      cell.value = value;
+      if (!Number.isNaN(value)) {
+        cell.value = value;
+      }
       clearKeys.push(packKey(addr.row, addr.col));
     }
     this.recalcCoordinator.clearDirtyKeys(clearKeys);

@@ -20,7 +20,7 @@
  *  ```
  */
 
-import { Worksheet } from '../worksheet';
+import { DEFAULT_WORKSHEET_COLS, DEFAULT_WORKSHEET_ROWS, Worksheet } from '../worksheet';
 import { snapshotCodec } from '../persistence/SnapshotCodec';
 import type { WorksheetSnapshot } from '../persistence/SnapshotCodec';
 import type { Cell, CellStyle, ExtendedCellValue, Range, Address, DataValidationRule, SheetProtectionOptions, FreezeState, ColumnFilter, SortKey, AutoFilterRange } from '../types';
@@ -134,12 +134,12 @@ export type SpreadsheetOptions = {
   maxUndoHistory?: number;
   /**
    * Initial row count.
-   * @default 1000
+   * @default 5000
    */
   rows?: number;
   /**
    * Initial column count.
-   * @default 26
+   * @default 16384
    */
   cols?: number;
 };
@@ -1247,8 +1247,8 @@ class SpreadsheetV1 implements SpreadsheetSDK {
 
 const DEFAULT_OPTIONS: Required<SpreadsheetOptions> = {
   maxUndoHistory: 100,
-  rows: 1000,
-  cols: 26,
+  rows: DEFAULT_WORKSHEET_ROWS,
+  cols: DEFAULT_WORKSHEET_COLS,
 };
 
 /**

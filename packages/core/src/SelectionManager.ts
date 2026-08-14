@@ -214,15 +214,26 @@ export class SelectionManager extends Emitter<SelectionEvent> {
   }
   
   /**
-   * Select all cells in worksheet
+   * Select the cells that contain data in the worksheet.
    */
   selectAll(): void {
-    const rowCount = this.worksheet.rowCount || 1000;
-    const colCount = this.worksheet.colCount || 26;
-    
+    let minRow = Number.POSITIVE_INFINITY;
+    let minCol = Number.POSITIVE_INFINITY;
+    let maxRow = 0;
+    let maxCol = 0;
+
+    this.worksheet.forEachNonEmptyCell((row, col, cell) => {
+      const hasValue = cell?.value !== undefined && cell.value !== null && cell.value !== '';
+      if (!hasValue && !cell?.formula) return;
+      minRow = Math.min(minRow, row);
+      minCol = Math.min(minCol, col);
+      maxRow = Math.max(maxRow, row);
+      maxCol = Math.max(maxCol, col);
+    });
+
     const allRange: Range = {
-      start: { row: 1, col: 1 },
-      end: { row: rowCount, col: colCount },
+      start: maxRow === 0 ? this.state.activeCell : { row: minRow, col: minCol },
+      end: maxRow === 0 ? this.state.activeCell : { row: maxRow, col: maxCol },
     };
     
     this.selectRange(allRange);

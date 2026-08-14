@@ -8,7 +8,7 @@
  * - Minimal memory footprint
  */
 
-import { Workbook, Worksheet } from '@cyber-sheet/core';
+import { DEFAULT_WORKSHEET_COLS, DEFAULT_WORKSHEET_ROWS, Workbook, Worksheet } from '@cyber-sheet/core';
 import { LightweightXLSXParser, XLSXParseOptions, XLSXMetadata } from './LightweightParser';
 
 export interface ImportOptions extends XLSXParseOptions {
@@ -48,6 +48,13 @@ export interface ImportResult {
     sheetNameOrIndex: string | number,
     newViewport: { startRow: number; endRow: number; startCol: number; endCol: number }
   ) => Promise<void>;
+}
+
+function sheetDisplayDimensions(dims: { rows: number; cols: number }): { rows: number; cols: number } {
+  return {
+    rows: Math.max(DEFAULT_WORKSHEET_ROWS, dims.rows),
+    cols: Math.max(DEFAULT_WORKSHEET_COLS, dims.cols),
+  };
 }
 
 /**
@@ -185,19 +192,20 @@ export async function importXLSX(
   for (let i = 0; i < metadata.sheetNames.length; i++) {
     const sheetName = metadata.sheetNames[i];
     const dims = metadata.sheetDimensions.get(sheetName) || { rows: 1000, cols: 26 };
+    const displayDims = sheetDisplayDimensions(dims);
     
     if (options.lazySheets) {
       // Create lazy worksheet
       const sheet = new LazyWorksheet(
         sheetName,
-        dims.rows,
-        dims.cols,
+        displayDims.rows,
+        displayDims.cols,
         parser,
         i
       );
       
       // Add sheet to workbook by creating it first, then replacing
-      workbook.addSheet(sheetName, dims.rows, dims.cols);
+      workbook.addSheet(sheetName, displayDims.rows, displayDims.cols);
       const addedSheet = workbook.getSheet(sheetName)!;
       // Copy lazy sheet reference
       lazySheets.set(sheetName, sheet);
@@ -205,7 +213,7 @@ export async function importXLSX(
       (workbook as any).sheets.set(sheetName, sheet);
     } else {
       // Load sheet immediately
-      const sheet = workbook.addSheet(sheetName, dims.rows, dims.cols);
+      const sheet = workbook.addSheet(sheetName, displayDims.rows, displayDims.cols);
       
       // Load cells
       const cells = await parser.parseSheet(i, {

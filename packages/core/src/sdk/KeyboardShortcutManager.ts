@@ -322,8 +322,9 @@ class KeyboardShortcutManagerImpl implements KeyboardShortcutManager {
 
     $('ctrl+a', (s, m) => {
       const mi = m as KeyboardShortcutManagerImpl;
-      mi._anchorRow = 1; mi._anchorCol = 1;
-      mi._setActive(s.rowCount, s.colCount, true); return true;
+      const range = mi._getUsedRange();
+      mi._anchorRow = range.start.row; mi._anchorCol = range.start.col;
+      mi._setActive(range.end.row, range.end.col, true); return true;
     });
     $('ctrl+space', (s, m) => {
       const mi = m as KeyboardShortcutManagerImpl;
@@ -418,10 +419,50 @@ class KeyboardShortcutManagerImpl implements KeyboardShortcutManager {
 
     // ── Filter ─────────────────────────────────────────────────────────────
     $('ctrl+shift+l', (s, m) => {
-      if (s.getAutoFilterRange()) { s.clearAutoFilterRange(); }
-      else { s.setAutoFilterRange(m.activeRow, 1, s.colCount); }
+      if (s.getAutoFilterRange()) {
+        s.clearAutoFilterRange();
+      } else {
+        const selection = m.selectionRange;
+        if (selection) {
+          s.setAutoFilterRange(selection.start.row, selection.start.col, selection.end.col);
+        } else {
+          s.setAutoFilterRange(m.activeRow, 1, s.colCount);
+        }
+      }
       return true;
     });
+  }
+
+  private _getUsedRange(): Range {
+    let minRow = Number.POSITIVE_INFINITY;
+    let minCol = Number.POSITIVE_INFINITY;
+    let maxRow = 0;
+    let maxCol = 0;
+
+    for (let row = 1; row <= this._sdk.rowCount; row++) {
+      for (let col = 1; col <= this._sdk.colCount; col++) {
+        const cell = this._sdk.getCell(row, col);
+        const hasValue = cell?.value !== undefined && cell.value !== null && cell.value !== '';
+        if (!hasValue && !cell?.formula) continue;
+
+        minRow = Math.min(minRow, row);
+        minCol = Math.min(minCol, col);
+        maxRow = Math.max(maxRow, row);
+        maxCol = Math.max(maxCol, col);
+      }
+    }
+
+    if (maxRow === 0 || maxCol === 0) {
+      return {
+        start: { row: this._activeRow, col: this._activeCol },
+        end: { row: this._activeRow, col: this._activeCol },
+      };
+    }
+
+    return {
+      start: { row: minRow, col: minCol },
+      end: { row: maxRow, col: maxCol },
+    };
   }
 }
 

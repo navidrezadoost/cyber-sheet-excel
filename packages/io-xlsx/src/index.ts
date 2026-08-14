@@ -2,7 +2,7 @@
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
 import { unzipSync, strFromU8 } from 'fflate';
-import { Workbook, Worksheet, CellStyle } from '@cyber-sheet/core';
+import { DEFAULT_WORKSHEET_COLS, DEFAULT_WORKSHEET_ROWS, Workbook, CellStyle } from '@cyber-sheet/core';
 
 // Export new lightweight parser
 export * from './import';
@@ -12,6 +12,10 @@ export * from './export';
 export * from './progressive';
 
 type FetchLike = (input: RequestInfo, init?: RequestInit) => Promise<Response>;
+
+function displayDimension(value: number, defaultValue: number): number {
+  return Math.max(defaultValue, value);
+}
 
 export async function loadXlsxFromUrl(url: string, fetchFn?: FetchLike): Promise<Workbook> {
   const f = fetchFn ?? fetch;
@@ -68,10 +72,10 @@ export function loadXlsxFromArrayBuffer(data: Uint8Array): Workbook {
     const sheetXml = getText(path);
     if (!sheetXml) continue;
     
-    // Parse dimension to get actual sheet size
+    // Parse dimension to get declared sheet size, then scan cells as a fallback.
     const dimMatch = sheetXml.match(/<dimension[^>]*ref="([A-Z]+\d+:)?([A-Z]+\d+)"/);
-    let maxRow = 100;
-    let maxCol = 26;
+    let maxRow = 1;
+    let maxCol = 1;
     
     if (dimMatch) {
       const endRef = dimMatch[2]; // e.g., "Z100"
@@ -79,12 +83,28 @@ export function loadXlsxFromArrayBuffer(data: Uint8Array): Workbook {
       maxRow = endAddr.row;
       maxCol = endAddr.col;
     }
-    
-    const ws = wb.addSheet(s.name, maxRow, maxCol);
-    
-    // Parse rows and c elements
+
+    // Parse rows and c elements before creating the sheet so files with missing
+    // or stale dimensions still get their full real size.
     // Example: <c r="A1" t="s"><v>0</v></c>
     const rowMatches = Array.from(sheetXml.matchAll(/<row[^>]*r="(\d+)"[\s\S]*?<\/row>/g)) as unknown as RegExpMatchArray[];
+    for (const rowMatch of rowMatches) {
+      const rowR = parseInt((rowMatch as any)[1], 10);
+      maxRow = Math.max(maxRow, rowR);
+      const rowXml = (rowMatch as any)[0] as string;
+      const cellRefs = Array.from(rowXml.matchAll(/<c\s+[^>]*\br="([A-Z]+\d+)"/g)) as unknown as RegExpMatchArray[];
+      for (const refMatch of cellRefs) {
+        const addr = a1ToAddress((refMatch as any)[1] as string);
+        maxRow = Math.max(maxRow, addr.row);
+        maxCol = Math.max(maxCol, addr.col);
+      }
+    }
+
+    const ws = wb.addSheet(
+      s.name,
+      displayDimension(maxRow, DEFAULT_WORKSHEET_ROWS),
+      displayDimension(maxCol, DEFAULT_WORKSHEET_COLS),
+    );
     
     for (const rowMatch of rowMatches) {
       const rowR = parseInt((rowMatch as any)[1], 10);

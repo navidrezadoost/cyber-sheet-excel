@@ -2,7 +2,7 @@
 
 import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import type { FileOperations, RecentFile } from '@cyber-sheet/core';
-import { loadXlsxProgressivelyFromArrayBuffer } from '@cyber-sheet/io-xlsx';
+import { loadXlsxFromArrayBuffer } from '@cyber-sheet/io-xlsx';
 
 export interface OpenPanelProps {
   fileOperations: FileOperations;
@@ -167,9 +167,8 @@ export const OpenPanel: React.FC<OpenPanelProps> = ({
 
     try {
       const arrayBuffer = await file.arrayBuffer();
-      const session = await loadXlsxProgressivelyFromArrayBuffer(arrayBuffer);
-      onWorkbookLoaded(session.workbook);
-      session.done.catch((err) => console.error('Progressive XLSX load failed:', err));
+      const workbook = loadXlsxFromArrayBuffer(new Uint8Array(arrayBuffer));
+      onWorkbookLoaded(workbook);
     } catch (err) {
       console.error('Failed to load file:', err);
       alert('Failed to load file. Please ensure it is a valid XLSX file.');

@@ -497,13 +497,25 @@ describe('§12 Shift+Home / Ctrl+Shift+Home', () => {
 // ── §13 Selection — Ctrl+A / Ctrl+Space / Shift+Space ────────────────────
 
 describe('§13 Ctrl+A / Ctrl+Space / Shift+Space', () => {
-  test('Ctrl+A selects entire sheet', () => {
+  test('Ctrl+A selects the used data range', () => {
+    const s = makeSheet(20, 10);
+    s.setCell(3, 2, 'northwest');
+    s.setCell(8, 6, 'southeast');
+    const m = createKeyboardManager(s, { initialRow: 5, initialCol: 5 });
+    m.handleKeyEvent(ctrl('a'));
+    const r = m.selectionRange!;
+    expect(r.start).toEqual({ row: 3, col: 2 });
+    expect(r.end).toEqual({ row: 8, col: 6 });
+    s.dispose();
+  });
+
+  test('Ctrl+A selects the active cell when the sheet is empty', () => {
     const s = makeSheet(20, 10);
     const m = createKeyboardManager(s, { initialRow: 5, initialCol: 5 });
     m.handleKeyEvent(ctrl('a'));
     const r = m.selectionRange!;
-    expect(r.start).toEqual({ row: 1, col: 1 });
-    expect(r.end).toEqual({ row: 20, col: 10 });
+    expect(r.start).toEqual({ row: 5, col: 5 });
+    expect(r.end).toEqual({ row: 5, col: 5 });
     s.dispose();
   });
 
@@ -885,7 +897,38 @@ describe('§23 AutoFilter toggle (Ctrl+Shift+L)', () => {
     const m = createKeyboardManager(s, { initialRow: 1, initialCol: 1 });
     m.handleKeyEvent(ctrlShift('l'));
     const range = s.getAutoFilterRange();
-    expect(range).not.toBeNull();
+    expect(range).toEqual({ headerRow: 1, startCol: 1, endCol: 10 });
+    s.dispose();
+  });
+
+  test('enables autofilter for selected column range', () => {
+    const s = makeSheet(20, 10);
+    const m = createKeyboardManager(s, { initialRow: 1, initialCol: 2 });
+    m.handleKeyEvent(shift('ArrowDown'));
+    m.handleKeyEvent(shift('ArrowDown'));
+    m.handleKeyEvent(ctrlShift('l'));
+    expect(s.getAutoFilterRange()).toEqual({ headerRow: 1, startCol: 2, endCol: 2 });
+    s.dispose();
+  });
+
+  test('enables autofilter for selected multi-column range', () => {
+    const s = makeSheet(20, 10);
+    const m = createKeyboardManager(s, { initialRow: 1, initialCol: 2 });
+    m.handleKeyEvent(shift('ArrowRight'));
+    m.handleKeyEvent(shift('ArrowDown'));
+    m.handleKeyEvent(ctrlShift('l'));
+    expect(s.getAutoFilterRange()).toEqual({ headerRow: 1, startCol: 2, endCol: 3 });
+    s.dispose();
+  });
+
+  test('enables autofilter for whole-sheet selection', () => {
+    const s = makeSheet(20, 10);
+    s.setCell(1, 1, 'first');
+    s.setCell(20, 10, 'last');
+    const m = createKeyboardManager(s, { initialRow: 2, initialCol: 3 });
+    m.handleKeyEvent(ctrl('a'));
+    m.handleKeyEvent(ctrlShift('l'));
+    expect(s.getAutoFilterRange()).toEqual({ headerRow: 1, startCol: 1, endCol: 10 });
     s.dispose();
   });
 

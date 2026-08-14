@@ -134,7 +134,7 @@
  *   • If scheduler throws → state = IDLE + rethrow (state is corrupt)
  */
 
-import { Worksheet } from './worksheet';
+import { DEFAULT_WORKSHEET_COLS, DEFAULT_WORKSHEET_ROWS, Worksheet } from './worksheet';
 import { FormulaEngine } from './FormulaEngine';
 import {
   RecomputeScheduler,
@@ -216,7 +216,7 @@ export class SpreadsheetEngine {
   private _txn: TransactionContext | null = null;
 
   constructor(name = 'Sheet1') {
-    this._ws = new Worksheet(name, 1000, 26, undefined, undefined, this);
+    this._ws = new Worksheet(name, DEFAULT_WORKSHEET_ROWS, DEFAULT_WORKSHEET_COLS, undefined, undefined, this);
     this._formulaEngine = new FormulaEngine();
 
     // Scheduler is PRIVATE — external callers cannot flush() directly

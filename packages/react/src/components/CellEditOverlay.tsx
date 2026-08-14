@@ -20,6 +20,7 @@ export interface CellEditOverlayProps {
   onCancel: () => void;
   onValueChange?: (value: string) => void;
   onCursorChange?: (position: number) => void;
+  onNavigateVertical?: (direction: 'up' | 'down') => void;
   isPickingReference?: boolean;
   onReferencePickingChange?: (picking: boolean) => void;
   fontSize?: number;
@@ -34,6 +35,7 @@ export const CellEditOverlay: React.FC<CellEditOverlayProps> = ({
   onCancel,
   onValueChange,
   onCursorChange,
+  onNavigateVertical,
   isPickingReference = false,
   onReferencePickingChange,
   fontSize = 11,
@@ -77,6 +79,12 @@ export const CellEditOverlay: React.FC<CellEditOverlayProps> = ({
       e.preventDefault();
       e.stopPropagation();
       onCommit(value);
+      return;
+    }
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      e.stopPropagation();
+      onNavigateVertical?.(e.key === 'ArrowUp' ? 'up' : 'down');
       return;
     }
     e.stopPropagation();

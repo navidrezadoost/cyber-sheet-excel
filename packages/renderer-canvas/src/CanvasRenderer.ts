@@ -785,12 +785,16 @@ export class CanvasRenderer {
   addLayer(layer: RenderLayer) { this.layers.push(layer); this.layers.sort((a, b) => (stageOrder(a.stage) - stageOrder(b.stage)) || ((a.zIndex ?? 0) - (b.zIndex ?? 0))); this.redraw(); }
   removeLayer(id: string) { this.layers = this.layers.filter(l => l.id !== id); this.redraw(); }
   invalidateRange(r1: number, c1: number, r2: number, c2: number) {
-    console.log('🎨 [CanvasRenderer] invalidateRange called:', `(${r1},${c1}) to (${r2},${c2})`);
+    if (this.options.debug) {
+      console.log('🎨 [CanvasRenderer] invalidateRange called:', `(${r1},${c1}) to (${r2},${c2})`);
+    }
     const rect = this.rectForRange(r1, c1, r2, c2);
     if (rect) {
-      console.log('🎨 [CanvasRenderer] Invalidating rect:', rect);
+      if (this.options.debug) {
+        console.log('🎨 [CanvasRenderer] Invalidating rect:', rect);
+      }
       this.invalidateRect(rect.x, rect.y, rect.w, rect.h);
-    } else {
+    } else if (this.options.debug) {
       console.warn('⚠️ [CanvasRenderer] rectForRange returned null!');
     }
   }
@@ -988,7 +992,9 @@ export class CanvasRenderer {
   }
 
   redraw() {
-    console.log('🎨 [CanvasRenderer] redraw() called, dirty rect:', this.dirty, 'dirtyCells:', this.dirtyCells.size);
+    if (this.options.debug) {
+      console.log('🎨 [CanvasRenderer] redraw() called, dirty rect:', this.dirty, 'dirtyCells:', this.dirtyCells.size);
+    }
     const t0 = performance.now();
     this.evaluateVisibleFormulaCells();
     
@@ -1001,7 +1007,9 @@ export class CanvasRenderer {
       !this.gridLinesNeedRedraw;
     
     if (canUseDirtyRectOptimization) {
-      console.log('🎨 [CanvasRenderer] Using dirty-cell optimization for', this.dirtyCells.size, 'cells');
+      if (this.options.debug) {
+        console.log('🎨 [CanvasRenderer] Using dirty-cell optimization for', this.dirtyCells.size, 'cells');
+      }
       const dirtyCellsArray = Array.from(this.dirtyCells);
       this.dirtyCells.clear();
       
@@ -1029,7 +1037,9 @@ export class CanvasRenderer {
       // This will be completed in next iteration
       this.gridLinesNeedRedraw = true; // Force full redraw for now
     } else {
-      console.log('🎨 [CanvasRenderer] Using full redraw, dirty rect:', this.dirty);
+      if (this.options.debug) {
+        console.log('🎨 [CanvasRenderer] Using full redraw, dirty rect:', this.dirty);
+      }
     }
     
     // BEGIN: Standard full-frame render
@@ -1628,7 +1638,9 @@ export class CanvasRenderer {
     
     this._lastRenderMs = performance.now() - t0;
     this.dirty = null;
-    console.log('🎨 [CanvasRenderer] redraw() completed in', this._lastRenderMs.toFixed(2), 'ms');
+    if (this.options.debug) {
+      console.log('🎨 [CanvasRenderer] redraw() completed in', this._lastRenderMs.toFixed(2), 'ms');
+    }
     // observability callback
     if (this.options.onRender) {
       try { this.options.onRender({ ms: this._lastRenderMs, regions: this.lastDirtyRects.slice() }); } catch {}
@@ -1978,16 +1990,23 @@ export class CanvasRenderer {
     return activeSelections.some((range) => this.isAddressInRange(addr, range));
   }
 
+  private getFullSheetRange(): { start: Address; end: Address } {
+    return {
+      start: { row: 1, col: 1 },
+      end: { row: this.sheet.rowCount, col: this.sheet.colCount },
+    };
+  }
+
   private handleMouseDown = (e: MouseEvent) => {
     const hit = this.hitTest(e.clientX, e.clientY);
     if (!hit) return;
     
     // Handle select-all button (top-left corner)
     if (hit.type === 'select-all') {
-      this.setSelections([{ 
-        start: { row: 1, col: 1 }, 
-        end: { row: this.sheet.rowCount, col: this.sheet.colCount } 
-      }]);
+      this.setSelections([this.getFullSheetRange()]);
+      this.isDragging = false;
+      this.dragStartCell = null;
+      this.clickStartCell = null;
       return;
     }
     

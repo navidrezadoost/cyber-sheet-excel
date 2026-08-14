@@ -330,6 +330,8 @@ describe('§6 SpreadsheetOptions fields (v0.1.0 lock)', () => {
 
   it('default rows/cols create a usable sheet', () => {
     const s = createSpreadsheet();
+    expect(s.rowCount).toBe(5000);
+    expect(s.colCount).toBe(16384);
     s.setCell(1, 1, 'default');
     expect(s.getCellValue(1, 1)).toBe('default');
     s.dispose();

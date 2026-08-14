@@ -1,6 +1,6 @@
 import { FormulaEngine } from '../FormulaEngine';
 import type { CellValue } from '../types';
-import { Worksheet } from '../worksheet';
+import { DEFAULT_WORKSHEET_COLS, DEFAULT_WORKSHEET_ROWS, Worksheet } from '../worksheet';
 import {
   type FormulaWorkerOpName,
   type FormulaWorkerPayload,
@@ -16,7 +16,7 @@ export class FormulaWorkerHost {
   private readonly worksheet: Worksheet;
 
   constructor(sheetName = 'Sheet1') {
-    this.worksheet = new Worksheet(sheetName, 1000, 26, this.engine as any);
+    this.worksheet = new Worksheet(sheetName, DEFAULT_WORKSHEET_ROWS, DEFAULT_WORKSHEET_COLS, this.engine as any);
   }
 
   handleMessage(msg: FormulaWorkerRequest): { response: FormulaWorkerResponse; transferList: Transferable[] } {

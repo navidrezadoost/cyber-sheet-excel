@@ -83,8 +83,32 @@ export const CyberSheet = forwardRef<CyberSheetHandle, CyberSheetProps>(function
   commandManagerRef.current = commandManager;
   const componentRegistryRef = useRef(new ComponentRegistry());
   const [selections, setSelections] = useState<Array<{ start: { row: number; col: number }; end: { row: number; col: number } }>>([]);
+  const [horizontalScroll, setHorizontalScroll] = useState({ x: 0, maxX: 0, contentWidth: 0, viewportWidth: 0 });
   const selectionsRef = useRef(selections as any);
+  const horizontalScrollbarRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => { selectionsRef.current = selections; }, [selections]);
+
+  const syncHorizontalScrollState = useCallback((renderer = rendererRef.current as CanvasRenderer | null) => {
+    if (!renderer) return;
+    const scroll = renderer.getScroll();
+    const max = renderer.getMaxScroll();
+    const content = renderer.getContentSize();
+    const viewport = renderer.getViewportSize();
+    const next = {
+      x: scroll.x,
+      maxX: max.x,
+      contentWidth: content.width,
+      viewportWidth: viewport.width,
+    };
+    setHorizontalScroll((prev) =>
+      prev.x === next.x &&
+      prev.maxX === next.maxX &&
+      prev.contentWidth === next.contentWidth &&
+      prev.viewportWidth === next.viewportWidth
+        ? prev
+        : next
+    );
+  }, []);
 
   useEffect(() => {
     registerRendererLazyBridges(workbook.eventBus, () => rendererRef.current);
@@ -190,6 +214,7 @@ export const CyberSheet = forwardRef<CyberSheetHandle, CyberSheetProps>(function
     };
     const r = new CanvasRenderer(el, sheetRef.current, effectiveRendererOptions);
     rendererRef.current = r;
+    syncHorizontalScrollState(r);
     setOverlayTick((value) => value + 1);
     if (typeof zoom === 'number' && typeof (r as any).setZoom === 'function') {
       try { (r as any).setZoom(zoom); } catch {}
@@ -200,7 +225,7 @@ export const CyberSheet = forwardRef<CyberSheetHandle, CyberSheetProps>(function
     try { onRendererReady?.(r); } catch {}
     reactivateRendererLazyBridges(workbook.eventBus);
     return () => { r.dispose(); rendererRef.current = null; };
-  }, [workbook, sheetName]);
+  }, [workbook, sheetName, syncHorizontalScrollState]);
 
   // Subscribe to renderer selection changes
   useEffect(() => {
@@ -214,20 +239,65 @@ export const CyberSheet = forwardRef<CyberSheetHandle, CyberSheetProps>(function
     return () => unsubscribe.dispose();
   }, [rendererRef.current]);
 
+  useEffect(() => {
+    const r = rendererRef.current as CanvasRenderer | null;
+    if (!r || typeof r.onScrollChange !== 'function') return;
+
+    syncHorizontalScrollState(r);
+    const unsubscribe = r.onScrollChange((event) => {
+      const content = r.getContentSize();
+      const viewport = r.getViewportSize();
+      const next = {
+        x: event.x,
+        maxX: event.maxX,
+        contentWidth: content.width,
+        viewportWidth: viewport.width,
+      };
+      setHorizontalScroll((prev) =>
+        prev.x === next.x &&
+        prev.maxX === next.maxX &&
+        prev.contentWidth === next.contentWidth &&
+        prev.viewportWidth === next.viewportWidth
+          ? prev
+          : next
+      );
+    });
+
+    return () => unsubscribe.dispose();
+  }, [rendererRef.current, syncHorizontalScrollState]);
+
+  useEffect(() => {
+    const scroller = horizontalScrollbarRef.current;
+    if (!scroller) return;
+    if (Math.abs(scroller.scrollLeft - horizontalScroll.x) > 1) {
+      scroller.scrollLeft = horizontalScroll.x;
+    }
+  }, [horizontalScroll.x]);
+
+  useEffect(() => {
+    const el = containerRef.current as HTMLElement | null;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => syncHorizontalScrollState());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [syncHorizontalScrollState]);
+
   // React to zoom prop changes
   useEffect(() => {
     const r = rendererRef.current as CanvasRenderer | null;
     if (!r) return;
     if (typeof zoom === 'number' && typeof (r as any).setZoom === 'function') {
       (r as any).setZoom(zoom);
+      syncHorizontalScrollState(r);
     }
-  }, [zoom, rendererRef.current]);
+  }, [zoom, rendererRef.current, syncHorizontalScrollState]);
 
   useEffect(() => {
     const r = rendererRef.current as CanvasRenderer | null;
     if (!r || typeof (r as any).setViewMode !== 'function') return;
     (r as any).setViewMode(viewMode);
-  }, [viewMode, rendererRef.current]);
+    syncHorizontalScrollState(r);
+  }, [viewMode, rendererRef.current, syncHorizontalScrollState]);
 
   // React to font configuration changes
   useEffect(() => {
@@ -719,11 +789,45 @@ export const CyberSheet = forwardRef<CyberSheetHandle, CyberSheetProps>(function
   }, [rendererRef.current, sheetRef.current, p.allowTouch, p.touchPanWithTwoFingers, p.kineticScroll, p.selectionInertia]);
 
   return (
-    <>
+    <div style={{ position: 'relative', width: '100%', height: '100%', ...style }}>
       <div
         ref={setContainerRef}
-        style={{ position: 'relative', width: '100%', height: '100%', ...style }}
+        style={{
+          position: 'absolute',
+          inset: horizontalScroll.maxX > 0 ? '0 0 16px 0' : 0,
+        }}
       />
+      {horizontalScroll.maxX > 0 && (
+        <div
+          ref={horizontalScrollbarRef}
+          onScroll={(event) => {
+            const nextX = event.currentTarget.scrollLeft;
+            const renderer = rendererRef.current as CanvasRenderer | null;
+            if (renderer && Math.abs(renderer.getScroll().x - nextX) > 1) {
+              const current = renderer.getScroll();
+              renderer.setScroll(nextX, current.y);
+            }
+          }}
+          style={{
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            bottom: 0,
+            height: 16,
+            overflowX: 'auto',
+            overflowY: 'hidden',
+            background: '#f3f3f3',
+            borderTop: '1px solid #d9d9d9',
+          }}
+        >
+          <div
+            style={{
+              width: Math.max(horizontalScroll.contentWidth, horizontalScroll.viewportWidth + horizontalScroll.maxX),
+              height: 1,
+            }}
+          />
+        </div>
+      )}
       <CustomCellOverlay
         key={overlayTick}
         container={overlayHost}
@@ -733,6 +837,6 @@ export const CyberSheet = forwardRef<CyberSheetHandle, CyberSheetProps>(function
         zoom={typeof zoom === 'number' ? zoom : 1}
         enabled={enableCustomComponents}
       />
-    </>
+    </div>
   );
 });

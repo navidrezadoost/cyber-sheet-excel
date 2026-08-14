@@ -9,7 +9,7 @@ import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import type { Workbook, CellComment } from '@cyber-sheet/core';
 import type { CanvasRenderer } from '@cyber-sheet/renderer-canvas';
 import { CommandManager, DrawingLayer, ClipboardService, ClearCellsCommand, FormulaEngine, DropdownList, FileOperations, SetViewModeCommand, SetHeaderFooterCommand, FormattingController, SetHyperlinkCommand, getDefaultHyperlinkScreenTip, SortCommand, ToggleAutoFilterCommand, ClearFilterCommand, FormatFormControlCommand, type ViewMode, type InsertCellsMode, type DeleteCellsMode, type Address, type CellHyperlink, type FormControlObject, type HeaderFooterSettings } from '@cyber-sheet/core';
-import { loadXlsxProgressivelyFromArrayBuffer } from '@cyber-sheet/io-xlsx';
+import { loadXlsxFromArrayBuffer } from '@cyber-sheet/io-xlsx';
 import { TitleBar } from './TitleBar';
 import { RibbonTabs } from './RibbonTabs';
 import { Ribbon } from '../components/ribbon/Ribbon';
@@ -88,12 +88,22 @@ import './excel-app.css';
 
 type NumberFormatCategory = 'general' | 'currency' | 'percentage' | 'number' | 'comma';
 
+const MAX_EXPANDED_SELECTION_ADDRESSES = 10000;
+
 function addressesFromRange(range: CellRange | null | undefined): Address[] {
   if (!range?.start || !range?.end) return [];
   const r1 = Math.min(range.start.row, range.end.row);
   const r2 = Math.max(range.start.row, range.end.row);
   const c1 = Math.min(range.start.col, range.end.col);
   const c2 = Math.max(range.start.col, range.end.col);
+  const cellCount = (r2 - r1 + 1) * (c2 - c1 + 1);
+
+  if (cellCount > MAX_EXPANDED_SELECTION_ADDRESSES) {
+    const start = { row: r1, col: c1 };
+    const end = { row: r2, col: c2 };
+    return start.row === end.row && start.col === end.col ? [start] : [start, end];
+  }
+
   const addresses: Address[] = [];
   for (let row = r1; row <= r2; row++) {
     for (let col = c1; col <= c2; col++) {
@@ -101,6 +111,34 @@ function addressesFromRange(range: CellRange | null | undefined): Address[] {
     }
   }
   return addresses;
+}
+
+function getUsedDataRange(sheet: any): CellRange {
+  let minRow = Number.POSITIVE_INFINITY;
+  let minCol = Number.POSITIVE_INFINITY;
+  let maxRow = 0;
+  let maxCol = 0;
+  const forEachNonEmptyCell = sheet?.forEachNonEmptyCell;
+
+  if (typeof forEachNonEmptyCell === 'function') {
+    forEachNonEmptyCell.call(sheet, (row: number, col: number, cell: { value?: unknown; formula?: string }) => {
+      const hasValue = cell?.value !== undefined && cell.value !== null && cell.value !== '';
+      if (!hasValue && !cell?.formula) return;
+      minRow = Math.min(minRow, row);
+      minCol = Math.min(minCol, col);
+      maxRow = Math.max(maxRow, row);
+      maxCol = Math.max(maxCol, col);
+    });
+  }
+
+  if (maxRow === 0 || maxCol === 0) {
+    return { start: { row: 1, col: 1 }, end: { row: 1, col: 1 } };
+  }
+
+  return {
+    start: { row: minRow, col: minCol },
+    end: { row: maxRow, col: maxCol },
+  };
 }
 
 function resolveStyleColor(color: unknown): string {
@@ -890,9 +928,8 @@ const ExcelAppView: React.FC<ExcelAppProps> = ({
 
     try {
       const arrayBuffer = await file.arrayBuffer();
-      const session = await loadXlsxProgressivelyFromArrayBuffer(arrayBuffer);
-      applyLoadedWorkbook(session.workbook);
-      session.done.catch((err) => console.error('Progressive XLSX load failed:', err));
+      const workbook = loadXlsxFromArrayBuffer(new Uint8Array(arrayBuffer));
+      applyLoadedWorkbook(workbook);
     } catch (err) {
       console.error('Failed to load dropped file:', err);
       alert('Failed to load file. Please ensure it is a valid XLSX file.');
@@ -1303,6 +1340,28 @@ const ExcelAppView: React.FC<ExcelAppProps> = ({
     setInCellEdit(null);
     setIsPickingReference(false);
   }, [inCellEdit, appConfig, applyEditedCellValue]);
+
+  const cancelInCellEditAndNavigateVertical = useCallback((direction: 'up' | 'down') => {
+    const edit = inCellEditRef.current;
+    const sheet = workbook.activeSheet;
+    if (!edit || !sheet) return;
+
+    const nextCell = {
+      row: direction === 'up'
+        ? Math.max(1, edit.cell.row - 1)
+        : Math.min(sheet.rowCount || 1, edit.cell.row + 1),
+      col: edit.cell.col,
+    };
+
+    setInCellEdit(null);
+    inCellEditRef.current = null;
+    setIsPickingReference(false);
+    isPickingReferenceRef.current = false;
+    setSelectedCell(nextCell);
+    setSelection({ start: nextCell, end: nextCell });
+    renderer?.setSelection({ start: nextCell, end: nextCell });
+    renderer?.scrollToCell?.(nextCell);
+  }, [workbook, renderer]);
 
   const applyInsertDelete = useCallback((
     type: 'insert' | 'delete',
@@ -2133,24 +2192,17 @@ const ExcelAppView: React.FC<ExcelAppProps> = ({
         return;
       }
       
-      // Ctrl+A (Select entire sheet)
+      // Ctrl+A (Select used data range)
       if (isCtrlLetter(e, 'a')) {
         e.preventDefault();
-        
-        // Select entire sheet
-        const lastRow = (sheet.rowCount || 1000) - 1;
-        const lastCol = (sheet.colCount || 100) - 1;
-        
-        console.log('📋 [ExcelApp] Ctrl+A - Selecting entire sheet:', `(0,0) to (${lastRow},${lastCol})`);
-        
-        setSelection({
-          start: { row: 0, col: 0 },
-          end: { row: lastRow, col: lastCol }
-        });
-        renderer?.setSelection({ 
-          start: { row: 0, col: 0 }, 
-          end: { row: lastRow, col: lastCol } 
-        });
+
+        const usedRange = getUsedDataRange(sheet);
+
+        console.log('📋 [ExcelApp] Ctrl+A - Selecting used data range:', usedRange);
+
+        setSelectedCell({ row: usedRange.start.row, col: usedRange.start.col });
+        setSelection(usedRange);
+        renderer?.setSelection(usedRange);
         return;
       }
       
@@ -2775,6 +2827,7 @@ const ExcelAppView: React.FC<ExcelAppProps> = ({
                     : prev,
                 );
               }}
+              onNavigateVertical={cancelInCellEditAndNavigateVertical}
               isPickingReference={isPickingReference}
               onReferencePickingChange={setIsPickingReference}
               fontSize={cyberSheetConfig.fonts.defaultSize}
