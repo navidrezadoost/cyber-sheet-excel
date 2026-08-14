@@ -38,9 +38,61 @@ export * from './hyperlinkUtils';
 export * from './SelectionManager';
 export * from './FormattingController';
 export * from './FileOperations';
-export * from './DrawingLayer';
-export * from './commands/DrawingCommands';
-export * from './commands/DataCommands';
+export {
+  DrawingLayer,
+} from './DrawingLayer';
+export type {
+  DrawingObject,
+  PictureObject,
+  ShapeType,
+  FillProperties,
+  LineProperties,
+  ShadowProperties,
+  ShapeObject,
+  IconObject,
+  FormControlType,
+  FormControlProperties,
+  FormControlObject,
+  WordArtStyle,
+  TextBoxObject,
+  ChartObject as DrawingChartObject,
+  Rect,
+  DrawingLayerEvent,
+  SerializedDrawingLayer,
+} from './DrawingLayer';
+export {
+  DeleteDrawingObjectsCommand,
+  CopyDrawingObjectsCommand,
+  MoveDrawingObjectsCommand,
+  ResizeDrawingObjectCommand,
+  RotateDrawingObjectCommand,
+  AddDrawingObjectCommand,
+  FormatFormControlCommand,
+  GroupDrawingObjectsCommand,
+} from './commands/DrawingCommands';
+export type {
+  Command as DrawingCommand,
+  FormControlFormatUpdates,
+} from './commands/DrawingCommands';
+export {
+  SortCommand,
+  ToggleAutoFilterCommand,
+  ClearFilterCommand,
+  SetDataValidationCommand,
+  ClearDataValidationCommand,
+  RemoveDuplicatesCommand,
+  TextToColumnsCommand,
+  GroupOutlineCommand,
+  UngroupOutlineCommand,
+  AutoSumCommand,
+} from './commands/DataCommands';
+export type {
+  Range as DataCommandRange,
+  SortLevel,
+  DataValidationRule as DataCommandValidationRule,
+  FilterState,
+  AutoSumPlan,
+} from './commands/DataCommands';
 export * from './commands/ConditionalFormattingCommands';
 export * from './commands/CellComponentCommands';
 export * from './commands/ViewCommands';
@@ -55,7 +107,20 @@ export * from './ConditionalFormattingBatchEngine';
 export * from './icon-sets';
 export * from './cell-styles-presets';
 export * from './icon-sets';
-export * from './DataValidationEngine';
+export {
+  DataValidationEngine,
+} from './DataValidationEngine';
+export type {
+  DataValidationType,
+  ValidationOperator,
+  ErrorAlertStyle,
+  DataValidationRule,
+  ValidationResult,
+} from './DataValidationEngine';
+export type {
+  DataValidationRule as CellDataValidationRule,
+  DataValidationType as CellDataValidationType,
+} from './types';
 export * from './DataValidationRenderer';
 export * from './search/FindService';
 export * from './models/ChartObject';

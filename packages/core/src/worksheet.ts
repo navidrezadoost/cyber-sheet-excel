@@ -755,8 +755,19 @@ export class Worksheet {
     const rows = range ? { start: range.start.row, end: range.end.row } : { start: 1, end: this.rowCount };
     const result: number[] = [];
     for (let r = rows.start; r <= rows.end; r++) {
+      if (this.isRowHidden(r)) continue;
       if (!this.rowMatchesFilters(r)) continue;
       result.push(r);
+    }
+    return result;
+  }
+
+  getVisibleColumnIndices(range?: Range): number[] {
+    const cols = range ? { start: range.start.col, end: range.end.col } : { start: 1, end: this.colCount };
+    const result: number[] = [];
+    for (let c = cols.start; c <= cols.end; c++) {
+      if (this.isColHidden(c)) continue;
+      result.push(c);
     }
     return result;
   }
@@ -768,6 +779,7 @@ export class Worksheet {
   getVisibleRowIndicesExcluding(columnToExclude: number): number[] {
     const result: number[] = [];
     for (let r = 1; r <= this.rowCount; r++) {
+      if (this.isRowHidden(r)) continue;
       if (!this.rowMatchesFilters(r, columnToExclude)) continue;
       result.push(r);
     }

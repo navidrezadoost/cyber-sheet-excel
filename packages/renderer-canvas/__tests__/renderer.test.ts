@@ -7,6 +7,11 @@ describe('CanvasRenderer', () => {
     mockCanvas();
   });
 
+  function setViewport(container: HTMLElement, width = 1000, height = 600) {
+    Object.defineProperty(container, 'clientWidth', { value: width, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: height, configurable: true });
+  }
+
   it('creates renderer instance without crashing', () => {
     const container = document.createElement('div');
     const workbook = new Workbook();
@@ -104,8 +109,118 @@ describe('CanvasRenderer', () => {
     renderer.dispose();
   });
 
+  it('skips hidden rows and columns in hit testing and range geometry', () => {
+    const container = document.createElement('div');
+    setViewport(container);
+    const workbook = new Workbook();
+    const sheet = workbook.addSheet('Sheet1', 10, 10);
+    sheet.setColumnWidth(1, 50);
+    sheet.setColumnWidth(2, 120);
+    sheet.setColumnWidth(3, 70);
+    sheet.setRowHeight(1, 20);
+    sheet.setRowHeight(2, 40);
+    sheet.setRowHeight(3, 30);
+    sheet.hideCol(2);
+    sheet.hideRow(2);
+
+    const renderer = new CanvasRenderer(container, sheet, { debug: false });
+    const anyRenderer = renderer as any;
+    const canvas = anyRenderer.canvas as HTMLCanvasElement;
+    canvas.getBoundingClientRect = () => ({
+      left: 0, top: 0, right: 1000, bottom: 600, width: 1000, height: 600, x: 0, y: 0, toJSON: () => ({})
+    } as DOMRect);
+
+    expect(renderer.cellAt(48 + 50 + 1, 24 + 20 + 1)).toEqual({ row: 3, col: 3 });
+    expect(anyRenderer.rectForRange(1, 1, 3, 3)).toEqual({
+      x: 48,
+      y: 24,
+      w: 120,
+      h: 50,
+    });
+
+    renderer.dispose();
+  });
+
+  it('uses visible tracks for merged-cell rectangles', () => {
+    const container = document.createElement('div');
+    setViewport(container);
+    const workbook = new Workbook();
+    const sheet = workbook.addSheet('Sheet1', 10, 10);
+    sheet.setColumnWidth(1, 50);
+    sheet.setColumnWidth(2, 120);
+    sheet.setColumnWidth(3, 70);
+    sheet.setRowHeight(1, 20);
+    sheet.setRowHeight(2, 40);
+    sheet.setRowHeight(3, 30);
+    sheet.mergeCells({ start: { row: 1, col: 1 }, end: { row: 3, col: 3 } });
+    sheet.hideCol(2);
+    sheet.hideRow(2);
+
+    const renderer = new CanvasRenderer(container, sheet, { debug: false });
+    const rect = (renderer as any).rectForRange(1, 1, 3, 3);
+
+    expect(rect).toEqual({
+      x: 48,
+      y: 24,
+      w: 120,
+      h: 50,
+    });
+
+    renderer.dispose();
+  });
+
+  it('caches canvas image loads and redraws after the image resolves', () => {
+    const container = document.createElement('div');
+    setViewport(container);
+    const workbook = new Workbook();
+    const sheet = workbook.addSheet('Sheet1', 10, 10);
+    const originalImage = (globalThis as any).Image;
+    const created: any[] = [];
+    class FakeImage {
+      crossOrigin = '';
+      complete = false;
+      naturalWidth = 0;
+      naturalHeight = 0;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      private _src = '';
+      set src(value: string) { this._src = value; }
+      get src() { return this._src; }
+    }
+    (globalThis as any).Image = function Image() {
+      const image = new FakeImage();
+      created.push(image);
+      return image;
+    };
+
+    const renderer = new CanvasRenderer(container, sheet, {
+      debug: false,
+      images: [{
+        source: 'data:image/png;base64,abc',
+        anchor: { row: 1, col: 1 },
+      }],
+    });
+
+    renderer.redraw();
+    expect(created).toHaveLength(1);
+    expect((renderer as any).imageCache.get('data:image/png;base64,abc').status).toBe('loading');
+
+    created[0].complete = true;
+    created[0].naturalWidth = 16;
+    created[0].naturalHeight = 16;
+    created[0].onload();
+    renderer.redraw();
+
+    expect(created).toHaveLength(1);
+    expect((renderer as any).imageCache.get('data:image/png;base64,abc').status).toBe('loaded');
+
+    renderer.dispose();
+    (globalThis as any).Image = originalImage;
+  });
+
   it('uses formula worker batches for large visible dirty sets', async () => {
     const container = document.createElement('div');
+    setViewport(container);
     const workbook = new Workbook();
     const sheet = workbook.addSheet('Sheet1');
     sheet.setCellValue({ row: 1, col: 1 }, 5);

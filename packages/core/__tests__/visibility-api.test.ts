@@ -484,7 +484,7 @@ describe('PM-7 · Hidden state does not affect storage memory', () => {
     // Cell object must NOT have a 'hidden' key
     expect('hidden' in (cell as object)).toBe(false);
     // No visibility state leaked into the cell
-    const cellKeys = Object.keys(cell as object).filter(k => k !== 'value' && k !== 'formula' && k !== 'style' && k !== 'comments' && k !== 'icon' && k !== 'spillSource' && k !== 'spilledFrom');
+    const cellKeys = Object.keys(cell as object).filter(k => k !== 'value' && k !== 'formula' && k !== 'style' && k !== 'comments' && k !== 'icon' && k !== 'customComponent' && k !== 'hyperlink' && k !== 'spillSource' && k !== 'spilledFrom');
     expect(cellKeys).toHaveLength(0);
   });
 
@@ -723,6 +723,26 @@ describe('getHiddenRows / getHiddenCols API', () => {
     sheet.hideRow(2);
     sheet.showRow(2);
     expect(sheet.getHiddenRows().size).toBe(0);
+  });
+
+  test('getVisibleRowIndices excludes hidden rows while preserving filter behavior', () => {
+    const sheet = makeSheet(5, 3);
+    sheet.setCellValue({ row: 1, col: 1 }, 'keep');
+    sheet.setCellValue({ row: 2, col: 1 }, 'keep');
+    sheet.setCellValue({ row: 3, col: 1 }, 'drop');
+    sheet.hideRow(2);
+    sheet.setColumnFilter(1, { type: 'equals', value: 'keep' });
+
+    expect(sheet.getVisibleRowIndices({ start: { row: 1, col: 1 }, end: { row: 5, col: 3 } })).toEqual([1]);
+  });
+
+  test('getVisibleColumnIndices excludes hidden columns', () => {
+    const sheet = makeSheet(5, 5);
+    sheet.hideCol(2);
+    sheet.hideCol(4);
+
+    expect(sheet.getVisibleColumnIndices()).toEqual([1, 3, 5]);
+    expect(sheet.getVisibleColumnIndices({ start: { row: 1, col: 2 }, end: { row: 5, col: 5 } })).toEqual([3, 5]);
   });
 });
 

@@ -521,8 +521,8 @@ export type CellEvent = {
   address: Address;
   /** Cell bounds in viewport coordinates */
   bounds: { x: number; y: number; width: number; height: number };
-  /** Original browser event */
-  originalEvent: MouseEvent | PointerEvent | TouchEvent;
+  /** Original browser event, or null for synthetic renderer events */
+  originalEvent: MouseEvent | PointerEvent | TouchEvent | null;
 };
 
 export type SheetEvents =

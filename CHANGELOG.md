@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - Canvas Rendering Updates (#94)
+
+- Skipped hidden rows and columns throughout canvas visible-track layout, hit testing, range geometry, page overlays, and auto-size scans.
+- Rendered merged ranges as a single anchor cell over visible tracks while suppressing non-anchor cell drawing and internal grid artifacts.
+- Added cached asynchronous canvas image rendering for cell-bound and floating images, including fit, clipping, rotation, and drawing-layer integration.
+- Added focused renderer and visibility regression tests for hidden tracks, merged ranges, image loading, and visible formula-worker batches.
+
 ### Added - Phase 8: Industrial-Scale Storage, Lazy Formula Evaluation, and Worker Rendering (June 16, 2026)
 
 **Columnar cell storage, viewport-driven formula recalculation, and Web Worker formula batches**

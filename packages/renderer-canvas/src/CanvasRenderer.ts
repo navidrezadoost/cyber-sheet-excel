@@ -33,6 +33,8 @@ export type CanvasRendererOptions = {
   formulaWorker?: FormulaWorkerBridge;
   formulaWorkerFactory?: () => FormulaWorkerBridge;
   formulaWorkerThreshold?: number;
+  images?: CanvasImageSpec[] | (() => CanvasImageSpec[]);
+  drawingLayer?: CanvasDrawingLayer;
 };
 
 export type FormulaWorkerBridge = {
@@ -40,6 +42,45 @@ export type FormulaWorkerBridge = {
   setCellFormula(row: number, col: number, formula: string, displayValue?: CellValue): Promise<void>;
   evaluateBatch(addresses: Address[]): Promise<{ values: Float64Array; evaluated: number; hasCycles: boolean }>;
   terminate?: () => void;
+};
+
+export type CanvasImageSpec = {
+  id?: string;
+  source: string;
+  visible?: boolean;
+  zIndex?: number;
+  rotation?: number;
+  fit?: 'contain' | 'cover' | 'stretch';
+  clip?: boolean;
+  anchor?: {
+    row: number;
+    col: number;
+    endRow?: number;
+    endCol?: number;
+    rowSpan?: number;
+    colSpan?: number;
+    offsetX?: number;
+    offsetY?: number;
+  };
+  position?: { x: number; y: number };
+  size?: { width: number; height: number };
+};
+
+export type CanvasPictureObject = {
+  id: string;
+  type: 'picture';
+  source: string;
+  visible: boolean;
+  zIndex: number;
+  rotation: number;
+  position: { x: number; y: number };
+  size: { width: number; height: number };
+};
+
+export type CanvasDrawingLayer = {
+  getAllObjects(): Array<CanvasPictureObject | { type: string; visible?: boolean }>;
+  on(event: 'changed', callback: () => void): void;
+  off(event: 'changed', callback: () => void): void;
 };
 
 export type RenderStage = 'background' | 'grid' | 'headers' | 'cells' | 'selection' | 'overlays' | 'after';
@@ -106,8 +147,12 @@ export class CanvasRenderer {
   private formulaWorkerHydrated = false;
   private layoutCacheDirty = true;
   private visibleRowsCache: number[] = [];
+  private visibleColsCache: number[] = [];
+  private visibleColIndexCache = new Map<number, number>();
   private rowTopsCache: number[] = [0];
   private colLeftsCache: number[] = [0];
+  private imageCache = new Map<string, { image: HTMLImageElement; status: 'loading' | 'loaded' | 'error' }>();
+  private drawingLayerChangeListener?: () => void;
   
   // Distinct value cache per column for filter menus
 
@@ -169,6 +214,8 @@ export class CanvasRenderer {
       formulaWorker: options.formulaWorker,
       formulaWorkerFactory: options.formulaWorkerFactory,
       formulaWorkerThreshold: options.formulaWorkerThreshold ?? 10,
+      images: options.images ?? [],
+      drawingLayer: options.drawingLayer,
     } as Required<CanvasRendererOptions>;
     this.formulaWorker = options.formulaWorker;
     this.theme = mergeTheme(ExcelLightTheme, this.options.theme);
@@ -188,6 +235,10 @@ export class CanvasRenderer {
       try { this.autoSizeColumns(cfg); } catch {}
     }
     this.setupEventListeners();
+    if (options.drawingLayer) {
+      this.drawingLayerChangeListener = () => this.scheduleRedraw();
+      options.drawingLayer.on('changed', this.drawingLayerChangeListener);
+    }
     this.cachedCFRules = sheet.getConditionalFormattingRules?.() ?? [];
     // Invalidate distinct value cache on relevant sheet events
     this.sheet.on((ev: SheetEvents) => {
@@ -239,6 +290,10 @@ export class CanvasRenderer {
     if (this.formulaWorker && this.formulaWorker !== this.options.formulaWorker) {
       this.formulaWorker.terminate?.();
       this.formulaWorker = undefined;
+    }
+    if (this.options.drawingLayer && this.drawingLayerChangeListener) {
+      this.options.drawingLayer.off('changed', this.drawingLayerChangeListener);
+      this.drawingLayerChangeListener = undefined;
     }
     this.canvas.remove();
   }
@@ -347,6 +402,11 @@ export class CanvasRenderer {
     return this.visibleRowsCache;
   }
 
+  private getVisibleCols(): number[] {
+    this.ensureLayoutCache();
+    return this.visibleColsCache;
+  }
+
   private invalidateLayoutCache(): void {
     this.layoutCacheDirty = true;
   }
@@ -358,6 +418,10 @@ export class CanvasRenderer {
     const rows: number[] = typeof anySheet.getVisibleRowIndices === 'function'
       ? anySheet.getVisibleRowIndices()
       : Array.from({ length: this.sheet.rowCount }, (_, i) => i + 1);
+    const cols: number[] = typeof anySheet.getVisibleColumnIndices === 'function'
+      ? anySheet.getVisibleColumnIndices()
+      : Array.from({ length: this.sheet.colCount }, (_, i) => i + 1)
+        .filter((col) => typeof anySheet.isColHidden !== 'function' || !anySheet.isColHidden(col));
 
     const rowTops = new Array(rows.length + 1);
     rowTops[0] = 0;
@@ -365,13 +429,15 @@ export class CanvasRenderer {
       rowTops[i + 1] = rowTops[i] + this.sheet.getRowHeight(rows[i]) * this.zoom;
     }
 
-    const colLefts = new Array(this.sheet.colCount + 1);
+    const colLefts = new Array(cols.length + 1);
     colLefts[0] = 0;
-    for (let col = 1; col <= this.sheet.colCount; col++) {
-      colLefts[col] = colLefts[col - 1] + this.sheet.getColumnWidth(col) * this.zoom;
+    for (let i = 0; i < cols.length; i++) {
+      colLefts[i + 1] = colLefts[i] + this.sheet.getColumnWidth(cols[i]) * this.zoom;
     }
 
     this.visibleRowsCache = rows;
+    this.visibleColsCache = cols;
+    this.visibleColIndexCache = new Map(cols.map((col, index) => [col, index]));
     this.rowTopsCache = rowTops;
     this.colLeftsCache = colLefts;
     this.layoutCacheDirty = false;
@@ -401,9 +467,15 @@ export class CanvasRenderer {
 
   private columnIndexAt(contentX: number): number | null {
     this.ensureLayoutCache();
-    if (contentX < 0 || contentX >= this.colLeftsCache[this.sheet.colCount]) return null;
-    const col = this.upperBound(this.colLeftsCache, contentX);
-    return col >= 1 && col <= this.sheet.colCount ? col : null;
+    const colIndex = this.visibleColumnIndexAt(contentX);
+    return colIndex == null ? null : this.visibleColsCache[colIndex];
+  }
+
+  private visibleColumnIndexAt(contentX: number): number | null {
+    this.ensureLayoutCache();
+    if (contentX < 0 || contentX >= this.colLeftsCache[this.visibleColsCache.length]) return null;
+    const colIndex = this.upperBound(this.colLeftsCache, contentX) - 1;
+    return colIndex >= 0 && colIndex < this.visibleColsCache.length ? colIndex : null;
   }
 
   private visibleRowIndexAt(contentY: number): number | null {
@@ -417,7 +489,7 @@ export class CanvasRenderer {
   getContentSize(): { width: number; height: number } {
     this.ensureLayoutCache();
     return {
-      width: this.colLeftsCache[this.sheet.colCount] ?? 0,
+      width: this.colLeftsCache[this.visibleColsCache.length] ?? 0,
       height: this.rowTopsCache[this.visibleRowsCache.length] ?? 0,
     };
   }
@@ -543,6 +615,23 @@ export class CanvasRenderer {
     return resolveExcelColor(color, { defaultColor });
   }
 
+  private resolveFillColor(fill: CellStyle['fill'] | undefined, defaultColor: string = '#FFFFFF'): string {
+    if (!fill) return defaultColor;
+    if (typeof fill === 'object' && 'type' in fill) {
+      if (fill.type === 'pattern') {
+        return this.resolveColor(fill.fgColor ?? fill.bgColor, defaultColor);
+      }
+      if (fill.type === 'gradient') {
+        return this.resolveColor(fill.stops[0]?.color, defaultColor);
+      }
+    }
+    return this.resolveColor(fill as ExcelColorSpec, defaultColor);
+  }
+
+  private normalizeVerticalAlign(valign: CellStyle['valign']): 'top' | 'middle' | 'bottom' | undefined {
+    return valign === 'top' || valign === 'middle' || valign === 'bottom' ? valign : undefined;
+  }
+
   private applyConditionalFormatting(
     value: unknown,
     addr: Address,
@@ -655,17 +744,8 @@ export class CanvasRenderer {
         ctx.fill();
       }
     } else if (iconType === 'url') {
-      const cacheKey = `img:${source}`;
-      let img = (this as any)._imageCache?.get(cacheKey);
-      if (!img) {
-        img = new Image();
-        img.crossOrigin = 'anonymous';
-        img.src = source;
-        (this as any)._imageCache = (this as any)._imageCache || new Map();
-        (this as any)._imageCache.set(cacheKey, img);
-        img.onload = () => { this.invalidateRect(x, y, drawW, drawH); };
-      }
-      if (img.complete && img.naturalWidth) {
+      const img = this.getImageElement(source);
+      if (img) {
         ctx.drawImage(img, ix, iy, size, size);
       }
     }
@@ -747,12 +827,14 @@ export class CanvasRenderer {
     ctx.strokeStyle = gridColor;
     ctx.lineWidth = 1;
     
-    const { firstRow, firstCol, xOffset, yOffset } = this.visibleRange();
+    const { xOffset, yOffset, firstColIndex } = this.visibleRange();
+    const visCols = this.getVisibleCols();
     
     // Vertical gridlines (columns)
     let x = xOffset;
-    let col = firstCol;
-    while (x < width && col <= this.sheet.colCount) {
+    let colIndex = firstColIndex ?? 0;
+    while (x < width && colIndex < visCols.length) {
+      const col = visCols[colIndex];
       const cw = this.sheet.getColumnWidth(col) * this.zoom;
       const px = Math.round(x + cw) + 0.5;
       ctx.beginPath();
@@ -760,7 +842,7 @@ export class CanvasRenderer {
       ctx.lineTo(px, height);
       ctx.stroke();
       x += cw;
-      col++;
+      colIndex++;
     }
     
     // Horizontal gridlines (rows - respect filters)
@@ -865,16 +947,17 @@ export class CanvasRenderer {
     }
   }
 
-  private visibleRange(): { firstRow: number; firstCol: number; xOffset: number; yOffset: number; firstRowIndex?: number } {
+  private visibleRange(): { firstRow: number; firstCol: number; xOffset: number; yOffset: number; firstRowIndex?: number; firstColIndex?: number } {
     this.ensureLayoutCache();
-    const col = this.columnIndexAt(this.scrollX) ?? this.sheet.colCount;
+    const colIndex = this.visibleColumnIndexAt(this.scrollX) ?? Math.max(0, this.visibleColsCache.length - 1);
     const rowIndex = this.visibleRowIndexAt(this.scrollY) ?? Math.max(0, this.visibleRowsCache.length - 1);
-    const colLeft = this.colLeftsCache[col - 1] ?? 0;
+    const colLeft = this.colLeftsCache[colIndex] ?? 0;
     const rowTop = this.rowTopsCache[rowIndex] ?? 0;
     const x = this.options.headerWidth - (this.scrollX - colLeft);
     const y = this.options.headerHeight - (this.scrollY - rowTop);
     const firstRow = this.visibleRowsCache[rowIndex] ?? 1;
-    return { firstRow, firstCol: col, xOffset: x, yOffset: y, firstRowIndex: rowIndex };
+    const firstCol = this.visibleColsCache[colIndex] ?? 1;
+    return { firstRow, firstCol, xOffset: x, yOffset: y, firstRowIndex: rowIndex, firstColIndex: colIndex };
   }
 
   private getVisibleCellAddresses(): Address[] {
@@ -883,18 +966,20 @@ export class CanvasRenderer {
     const width = viewport.width + this.options.headerWidth;
     const height = viewport.height + this.options.headerHeight;
     const visRows = this.getVisibleRows();
-    const { firstCol, xOffset, yOffset, firstRowIndex } = this.visibleRange();
+    const { xOffset, yOffset, firstRowIndex, firstColIndex } = this.visibleRange();
 
     let y = yOffset;
     let rowIndex = firstRowIndex ?? 0;
     while (y < height && rowIndex < visRows.length) {
       const row = visRows[rowIndex];
       let x = xOffset;
-      let col = firstCol;
-      while (x < width && col <= this.sheet.colCount) {
+      let colIndex = firstColIndex ?? 0;
+      while (x < width && colIndex < this.visibleColsCache.length) {
+        const col = this.visibleColsCache[colIndex];
+        const cw = this.sheet.getColumnWidth(col) * this.zoom;
         addresses.push({ row, col });
-        x += this.sheet.getColumnWidth(col) * this.zoom;
-        col++;
+        x += cw;
+        colIndex++;
       }
       y += this.sheet.getRowHeight(row) * this.zoom;
       rowIndex++;
@@ -909,17 +994,18 @@ export class CanvasRenderer {
     const dirtyAddresses = typeof isDirty === 'function'
       ? visibleAddresses.filter(addr => isDirty.call(this.sheet, addr))
       : visibleAddresses;
-    if (dirtyAddresses.length === 0) return;
+    const formulaAddresses = dirtyAddresses.filter(addr => !!this.sheet.getCell(addr)?.formula);
+    if (formulaAddresses.length === 0) return;
 
     const worker = this.getFormulaWorker(true);
     const threshold = this.options.formulaWorkerThreshold;
-    if (!worker || dirtyAddresses.length < threshold) {
+    if (!worker || formulaAddresses.length < threshold) {
       const evaluateBatch = (this.sheet as any).evaluateBatch;
-      if (typeof evaluateBatch === 'function') evaluateBatch.call(this.sheet, dirtyAddresses);
+      if (typeof evaluateBatch === 'function') evaluateBatch.call(this.sheet, formulaAddresses);
       return;
     }
 
-    const pending = dirtyAddresses.filter(addr => {
+    const pending = formulaAddresses.filter(addr => {
       const key = `${addr.row}:${addr.col}`;
       if (this.workerPendingCells.has(key)) return false;
       this.workerPendingCells.add(key);
@@ -989,6 +1075,163 @@ export class CanvasRenderer {
       console.warn('Failed to create formula worker; using main-thread formula evaluation.', error);
     }
     return this.formulaWorker;
+  }
+
+  private getImageElement(source: string): HTMLImageElement | null {
+    if (!source || typeof Image === 'undefined') return null;
+
+    let entry = this.imageCache.get(source);
+    if (!entry) {
+      const image = new Image();
+      entry = { image, status: 'loading' };
+      this.imageCache.set(source, entry);
+      image.crossOrigin = 'anonymous';
+      image.onload = () => {
+        const cached = this.imageCache.get(source);
+        if (cached) cached.status = 'loaded';
+        this.scheduleRedraw();
+      };
+      image.onerror = () => {
+        const cached = this.imageCache.get(source);
+        if (cached) cached.status = 'error';
+      };
+      image.src = source;
+    }
+
+    if (entry.status === 'loading' && entry.image.complete && entry.image.naturalWidth > 0) {
+      entry.status = 'loaded';
+    }
+
+    return entry.status === 'loaded' ? entry.image : null;
+  }
+
+  private drawImageInRect(
+    ctx: CanvasRenderingContext2D,
+    image: HTMLImageElement,
+    rect: { x: number; y: number; w: number; h: number },
+    fit: CanvasImageSpec['fit'] = 'contain',
+    clip = true,
+    rotation = 0,
+  ): void {
+    if (rect.w <= 0 || rect.h <= 0) return;
+
+    let sx = 0;
+    let sy = 0;
+    let sw = image.naturalWidth || rect.w;
+    let sh = image.naturalHeight || rect.h;
+    let dx = rect.x;
+    let dy = rect.y;
+    let dw = rect.w;
+    let dh = rect.h;
+
+    if (fit === 'contain' && sw > 0 && sh > 0) {
+      const scale = Math.min(rect.w / sw, rect.h / sh);
+      dw = sw * scale;
+      dh = sh * scale;
+      dx = rect.x + (rect.w - dw) / 2;
+      dy = rect.y + (rect.h - dh) / 2;
+    } else if (fit === 'cover' && sw > 0 && sh > 0) {
+      const sourceRatio = sw / sh;
+      const targetRatio = rect.w / rect.h;
+      if (sourceRatio > targetRatio) {
+        const nextSw = sh * targetRatio;
+        sx += (sw - nextSw) / 2;
+        sw = nextSw;
+      } else {
+        const nextSh = sw / targetRatio;
+        sy += (sh - nextSh) / 2;
+        sh = nextSh;
+      }
+    }
+
+    ctx.save();
+    if (clip) {
+      ctx.beginPath();
+      ctx.rect(rect.x, rect.y, rect.w, rect.h);
+      ctx.clip();
+    }
+    if (rotation) {
+      const cx = rect.x + rect.w / 2;
+      const cy = rect.y + rect.h / 2;
+      ctx.translate(cx, cy);
+      ctx.rotate((rotation * Math.PI) / 180);
+      dx -= cx;
+      dy -= cy;
+    }
+    ctx.drawImage(image, sx, sy, sw, sh, dx, dy, dw, dh);
+    ctx.restore();
+  }
+
+  private getConfiguredImages(): CanvasImageSpec[] {
+    const configured = this.options.images;
+    const images = typeof configured === 'function' ? configured() : configured;
+    const fromOptions = Array.isArray(images) ? images : [];
+    const drawingLayer = this.options.drawingLayer;
+    const fromDrawingLayer = drawingLayer
+      ? drawingLayer.getAllObjects()
+        .filter((obj): obj is CanvasPictureObject => (
+          obj.type === 'picture' &&
+          typeof (obj as CanvasPictureObject).source === 'string' &&
+          !!(obj as CanvasPictureObject).position &&
+          !!(obj as CanvasPictureObject).size
+        ))
+        .map((obj) => ({
+          id: obj.id,
+          source: obj.source,
+          visible: obj.visible,
+          zIndex: obj.zIndex,
+          rotation: obj.rotation,
+          position: obj.position,
+          size: obj.size,
+          fit: 'contain' as const,
+          clip: false,
+        }))
+      : [];
+    return [...fromOptions, ...fromDrawingLayer]
+      .filter((image) => image.visible !== false)
+      .sort((a, b) => (a.zIndex ?? 0) - (b.zIndex ?? 0));
+  }
+
+  private drawConfiguredImages(
+    ctx: CanvasRenderingContext2D,
+    mode: 'cell' | 'floating',
+  ): void {
+    for (const spec of this.getConfiguredImages()) {
+      const isCellBound = !!spec.anchor;
+      if ((mode === 'cell') !== isCellBound) continue;
+
+      let rect: { x: number; y: number; w: number; h: number } | null = null;
+      if (spec.anchor) {
+        const endRow = spec.anchor.endRow ?? (spec.anchor.row + (spec.anchor.rowSpan ?? 1) - 1);
+        const endCol = spec.anchor.endCol ?? (spec.anchor.col + (spec.anchor.colSpan ?? 1) - 1);
+        const cellRect = this.rectForRange(spec.anchor.row, spec.anchor.col, endRow, endCol);
+        if (!cellRect) continue;
+        const offsetX = (spec.anchor.offsetX ?? 0) * this.zoom;
+        const offsetY = (spec.anchor.offsetY ?? 0) * this.zoom;
+        rect = {
+          x: cellRect.x + offsetX,
+          y: cellRect.y + offsetY,
+          w: (spec.size?.width ?? cellRect.w) * this.zoom,
+          h: (spec.size?.height ?? cellRect.h) * this.zoom,
+        };
+        if (spec.size == null) {
+          rect.w = Math.max(0, cellRect.w - offsetX);
+          rect.h = Math.max(0, cellRect.h - offsetY);
+        }
+      } else if (spec.position && spec.size) {
+        rect = {
+          x: this.options.headerWidth + spec.position.x * this.zoom - this.scrollX,
+          y: this.options.headerHeight + spec.position.y * this.zoom - this.scrollY,
+          w: spec.size.width * this.zoom,
+          h: spec.size.height * this.zoom,
+        };
+      }
+
+      if (!rect) continue;
+      const image = this.getImageElement(spec.source);
+      if (!image) continue;
+      this.drawImageInRect(ctx, image, rect, spec.fit, spec.clip ?? (mode === 'cell'), spec.rotation ?? 0);
+    }
   }
 
   redraw() {
@@ -1117,19 +1360,21 @@ export class CanvasRenderer {
       // grid lines and headers
   ctx.strokeStyle = gridColor;
       ctx.lineWidth = 1;
-      const { firstRow, firstCol, xOffset, yOffset } = this.visibleRange();
+      const { xOffset, yOffset, firstColIndex } = this.visibleRange();
       this.drawLayers('grid', ctx, width, height);
 
       // Column headers
-      let x = xOffset; let col = firstCol;
+      const visCols = this.getVisibleCols();
+      let x = xOffset; let colIndex = firstColIndex ?? 0;
   ctx.fillStyle = headerFg;
-      if (clip) { while (x + this.sheet.getColumnWidth(col) * this.zoom < clip.x && col <= this.sheet.colCount) { x += this.sheet.getColumnWidth(col) * this.zoom; col++; } }
-      while (x < width && col <= this.sheet.colCount) {
+      if (clip) { while (colIndex < visCols.length && x + this.sheet.getColumnWidth(visCols[colIndex]) * this.zoom < clip.x) { x += this.sheet.getColumnWidth(visCols[colIndex]) * this.zoom; colIndex++; } }
+      while (x < width && colIndex < visCols.length) {
+        const col = visCols[colIndex];
         const cw = this.sheet.getColumnWidth(col) * this.zoom;
         if (clip && x > (clip.x + clip.w)) break;
   ctx.fillText(this.colLabel(col), x + cw / 2 - ctx.measureText(this.colLabel(col)).width / 2, headerHeight / 2 + this.theme.fontSize / 2 - 2);
         const px = Math.round(x + cw) + 0.5; ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, height); ctx.stroke();
-        x += cw; col++;
+        x += cw; colIndex++;
       }
 
       // Row headers (respect filters)
@@ -1152,11 +1397,12 @@ export class CanvasRenderer {
   if (clip) { while (rowIndex < visRows.length && y + this.sheet.getRowHeight(visRows[rowIndex]) * this.getZoom() < clip.y) { y += this.sheet.getRowHeight(visRows[rowIndex]) * this.getZoom(); rowIndex++; } }
       while (y < height && rowIndex < visRows.length) {
         const row = visRows[rowIndex];
-        x = xOffset; col = firstCol;
-        if (clip) { while (x + this.sheet.getColumnWidth(col) * this.zoom < clip.x && col <= this.sheet.colCount) { x += this.sheet.getColumnWidth(col) * this.zoom; col++; } }
+        x = xOffset; colIndex = firstColIndex ?? 0;
+        if (clip) { while (colIndex < visCols.length && x + this.sheet.getColumnWidth(visCols[colIndex]) * this.zoom < clip.x) { x += this.sheet.getColumnWidth(visCols[colIndex]) * this.zoom; colIndex++; } }
         const rh = this.sheet.getRowHeight(row) * this.zoom;
-        while (x < width && col <= this.sheet.colCount) {
+        while (x < width && colIndex < visCols.length) {
           if (clip && y > (clip.y + clip.h)) break;
+          const col = visCols[colIndex];
           const cw = this.sheet.getColumnWidth(col) * this.zoom;
           if (clip && x > (clip.x + clip.w)) break;
           const addr = { row, col };
@@ -1165,9 +1411,14 @@ export class CanvasRenderer {
           if (merged) {
             isAnchor = addr.row === merged.start.row && addr.col === merged.start.col;
             if (isAnchor) {
-              spanW = 0; for (let c = merged.start.col; c <= merged.end.col; c++) spanW += this.sheet.getColumnWidth(c) * this.zoom;
-              spanH = 0; for (let r2 = merged.start.row; r2 <= merged.end.row; r2++) spanH += this.sheet.getRowHeight(r2) * this.zoom;
+              const mergedRect = this.rectForRange(merged.start.row, merged.start.col, merged.end.row, merged.end.col);
+              spanW = mergedRect?.w ?? cw;
+              spanH = mergedRect?.h ?? rh;
             }
+          }
+          if (merged && !isAnchor) {
+            x += cw; colIndex++;
+            continue;
           }
           const v = this.sheet.getCellValue(addr);
           let style: CellStyle | undefined = this.sheet.getCellStyle(addr);
@@ -1182,6 +1433,11 @@ export class CanvasRenderer {
           // Phase 1 UI: Validate style is interned (dev mode only)
           // Prevents ecosystem integration drift (React, XLSX, toolbar mutations)
           assertInternedStyle(style, 'CanvasRenderer.renderCells');
+
+          if (merged && isAnchor) {
+            ctx.fillStyle = sheetBg;
+            ctx.fillRect(x + 1, y + 1, Math.max(0, spanW - 2), Math.max(0, spanH - 2));
+          }
 
           // Apply plugin-based heatmap background
           let pluginBg: string | undefined;
@@ -1203,7 +1459,7 @@ export class CanvasRenderer {
             ctx.fillRect(x + 1, y + 1, (merged ? spanW : cw) - 2, (merged ? spanH : rh) - 2);
           } else if (isAnchor && style?.fill) {
             // Resolve Excel color to CSS string
-            let fillColor = this.resolveColor(style.fill, '#FFFFFF');
+            let fillColor = this.resolveFillColor(style.fill, '#FFFFFF');
             // Apply color transform plugins
             for (const plugin of this.plugins) {
               if (plugin.transformColor) {
@@ -1229,7 +1485,8 @@ export class CanvasRenderer {
             ctx.restore();
           }
 
-          if (style?.border) {
+          const border = style?.border;
+          if (border) {
             const bw = merged ? spanW : cw; const bh = merged ? spanH : rh;
             if (!merged || isAnchor) {
               type BorderEdgeLike = string | ExcelColorSpec | { color?: string | ExcelColorSpec; style?: string };
@@ -1277,7 +1534,7 @@ export class CanvasRenderer {
                   configureBorderStroke({ ...edge, style: 'thin' });
                   draw();
                   ctx.save();
-                  ctx.translate(0, edgeSpec === style.border.left || edgeSpec === style.border.right ? 0 : 3);
+                  ctx.translate(0, edgeSpec === border.left || edgeSpec === border.right ? 0 : 3);
                   draw();
                   ctx.restore();
                   return;
@@ -1286,12 +1543,12 @@ export class CanvasRenderer {
                 draw();
                 ctx.setLineDash([]);
               };
-              drawLine(style.border.top as BorderEdgeLike, () => { ctx.beginPath(); ctx.moveTo(x, y + 0.5); ctx.lineTo(x + bw, y + 0.5); ctx.stroke(); });
-              drawLine(style.border.bottom as BorderEdgeLike, () => { ctx.beginPath(); ctx.moveTo(x, y + bh + 0.5); ctx.lineTo(x + bw, y + bh + 0.5); ctx.stroke(); });
-              drawLine(style.border.left as BorderEdgeLike, () => { ctx.beginPath(); ctx.moveTo(x + 0.5, y); ctx.lineTo(x + 0.5, y + bh); ctx.stroke(); });
-              drawLine(style.border.right as BorderEdgeLike, () => { ctx.beginPath(); ctx.moveTo(x + bw + 0.5, y); ctx.lineTo(x + bw + 0.5, y + bh); ctx.stroke(); });
-              drawLine(style.border.diagonalDown as BorderEdgeLike, () => { ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + bw, y + bh); ctx.stroke(); });
-              drawLine(style.border.diagonalUp as BorderEdgeLike, () => { ctx.beginPath(); ctx.moveTo(x, y + bh); ctx.lineTo(x + bw, y); ctx.stroke(); });
+              drawLine(border.top as BorderEdgeLike, () => { ctx.beginPath(); ctx.moveTo(x, y + 0.5); ctx.lineTo(x + bw, y + 0.5); ctx.stroke(); });
+              drawLine(border.bottom as BorderEdgeLike, () => { ctx.beginPath(); ctx.moveTo(x, y + bh + 0.5); ctx.lineTo(x + bw, y + bh + 0.5); ctx.stroke(); });
+              drawLine(border.left as BorderEdgeLike, () => { ctx.beginPath(); ctx.moveTo(x + 0.5, y); ctx.lineTo(x + 0.5, y + bh); ctx.stroke(); });
+              drawLine(border.right as BorderEdgeLike, () => { ctx.beginPath(); ctx.moveTo(x + bw + 0.5, y); ctx.lineTo(x + bw + 0.5, y + bh); ctx.stroke(); });
+              drawLine(border.diagonalDown as BorderEdgeLike, () => { ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + bw, y + bh); ctx.stroke(); });
+              drawLine(border.diagonalUp as BorderEdgeLike, () => { ctx.beginPath(); ctx.moveTo(x, y + bh); ctx.lineTo(x + bw, y); ctx.stroke(); });
             }
           }
 
@@ -1331,8 +1588,9 @@ export class CanvasRenderer {
             ctx.fillStyle = textColor;
             const drawW = merged ? spanW : cw; const drawH = merged ? spanH : rh; const maxWidth = Math.max(0, drawW - 8);
             let tx = x + 4;
+            const verticalAlign = this.normalizeVerticalAlign(style?.valign);
             // Compute vertical offset using layout function (pure layout concern)
-            let ty = y + computeVerticalOffset(style?.valign, drawH, fontSize, fontSize, 2, 4) - fontSize / 2 + 2;
+            let ty = y + computeVerticalOffset(verticalAlign, drawH, fontSize, fontSize, 2, 4) - fontSize / 2 + 2;
             const align = style?.align ?? this.formatCache.preferredAlign(v, style?.numberFormat);
             let textWidth = this.textCache.get(font, text); if (textWidth === undefined) { textWidth = ctx.measureText(text).width; this.textCache.set(font, text, textWidth); }
             // Shrink-to-fit scaling if specified (tolerate style flag if present)
@@ -1349,12 +1607,12 @@ export class CanvasRenderer {
               if (align === 'right') localTx = drawW / 2 - 4 - (textWidth as number);
               else if (align === 'center') localTx = -(textWidth as number) / 2;
               // Compute vertical offset using layout function (scaled context)
-              const valignOffset = computeVerticalOffset(style?.valign, drawH, fontSize, fontSize, 2, 4);
+              const valignOffset = computeVerticalOffset(verticalAlign, drawH, fontSize, fontSize, 2, 4);
               let localTy = valignOffset - drawH / 2 - fontSize / 2 + 2;
               ctx.beginPath(); ctx.rect(-drawW / 2 + 1, -drawH / 2 + 1, drawW - 2, drawH - 2); ctx.clip();
               ctx.fillText(text, localTx, localTy, maxWidth);
               ctx.restore();
-              x += this.sheet.getColumnWidth(col); col++;
+              x += cw; colIndex++;
               continue;
             }
             // Phase 1 UI: Apply indent (left-align only)
@@ -1375,7 +1633,7 @@ export class CanvasRenderer {
               scriptScale = 0.7; // 70% of normal font size
               const metrics = ctx.measureText(text);
               const ascent = metrics.actualBoundingBoxAscent || fontSize * 0.8;
-              scriptOffsetY = style.superscript ? -ascent * 0.4 : ascent * 0.2;
+              scriptOffsetY = style?.superscript ? -ascent * 0.4 : ascent * 0.2;
             }
             
             if (style?.rotation && style.rotation !== 0) {
@@ -1442,7 +1700,7 @@ export class CanvasRenderer {
               if (line) lines.push(line);
               // Compute vertical offset using layout function (multi-line case)
               const totalH = lines.length * (fontSize + 2);
-              let lineY = y + computeVerticalOffset(style?.valign, drawH, totalH, fontSize, 2, 4) - fontSize;
+              let lineY = y + computeVerticalOffset(verticalAlign, drawH, totalH, fontSize, 2, 4) - fontSize;
               const startX = align === 'center' ? (x + drawW / 2) : (align === 'right' ? (x + drawW - 4) : (x + 4 + indentOffset));
               
               // Phase 1 UI: Apply superscript/subscript to wrapped text (fast path: only if needed)
@@ -1552,18 +1810,8 @@ export class CanvasRenderer {
                 ctx.fillText('i', ix + size * 0.35, iy + size * 0.7);
               }
             } else if (icon.type === 'url') {
-              // Defer image loading; cache per URL
-              const cacheKey = `img:${icon.source}`;
-              let img = (this as any)._imageCache?.get(cacheKey);
-              if (!img) {
-                img = new Image();
-                img.crossOrigin = 'anonymous';
-                img.src = icon.source;
-                (this as any)._imageCache = (this as any)._imageCache || new Map();
-                (this as any)._imageCache.set(cacheKey, img);
-                img.onload = () => { this.invalidateRect(x, y, drawW, drawH); };
-              }
-              if (img.complete && img.naturalWidth) {
+              const img = this.getImageElement(icon.source);
+              if (img) {
                 ctx.drawImage(img, ix, iy, size, size);
               }
             }
@@ -1580,12 +1828,13 @@ export class CanvasRenderer {
               merged ? spanH : rh,
             );
           }
-          x += this.sheet.getColumnWidth(col) * this.zoom; col++;
+          x += cw; colIndex++;
         }
         y += this.sheet.getRowHeight(row) * this.zoom; rowIndex++;
       }
 
       this.drawLayers('cells', ctx, width, height);
+      this.drawConfiguredImages(ctx, 'cell');
 
       // Draw selections with light gray fill (Excel-style)
       const sels = this.selections.length ? this.selections : (this.selection ? [this.selection] : []);
@@ -1621,6 +1870,7 @@ export class CanvasRenderer {
       if (this.viewMode !== 'normal') {
         this.drawViewModeOverlay(ctx, width, height);
       }
+      this.drawConfiguredImages(ctx, 'floating');
       this.drawLayers('overlays', ctx, width, height);
       ctx.restore();
     }
@@ -1649,8 +1899,8 @@ export class CanvasRenderer {
 
   private sheetXForCol(col: number): number {
     this.ensureLayoutCache();
-    const clampedCol = Math.max(1, Math.min(col, this.sheet.colCount + 1));
-    return this.options.headerWidth + (this.colLeftsCache[clampedCol - 1] ?? 0) - this.scrollX;
+    const colIndex = this.lowerBound(this.visibleColsCache, col);
+    return this.options.headerWidth + (this.colLeftsCache[colIndex] ?? 0) - this.scrollX;
   }
 
   private sheetYForRow(row: number): number {
@@ -1667,11 +1917,13 @@ export class CanvasRenderer {
       (row) => this.sheet.getRowHeight(row) * this.zoom,
       metrics.contentHeightPx,
     );
-    const colBreaks = computeColPageBreaks(
-      this.sheet.colCount,
-      (col) => this.sheet.getColumnWidth(col) * this.zoom,
+    const cols = this.getVisibleCols();
+    const colBreakIndexes = computeColPageBreaks(
+      cols.length,
+      (index) => this.sheet.getColumnWidth(cols[index - 1]) * this.zoom,
       metrics.contentWidthPx,
     );
+    const colBreaks = colBreakIndexes.map((index) => cols[Math.max(0, index - 1)]).filter((col): col is number => col != null);
     return { rowBreaks, colBreaks };
   }
 
@@ -1679,8 +1931,20 @@ export class CanvasRenderer {
     const { headerHeight, headerWidth } = this.options;
     const metrics = getDefaultPageMetrics(this.zoom);
     const { rowBreaks, colBreaks } = this.getPageBreakPositions();
-    const rowStarts = [this.getVisibleRows()[0] ?? 1, ...rowBreaks.map((r) => r + 1)];
-    const colStarts = [1, ...colBreaks.map((c) => c + 1)];
+    const visibleRows = this.getVisibleRows();
+    const visibleCols = this.getVisibleCols();
+    const rowStarts = [
+      visibleRows[0] ?? 1,
+      ...rowBreaks
+        .map((row) => visibleRows[visibleRows.indexOf(row) + 1])
+        .filter((row): row is number => row != null),
+    ];
+    const colStarts = [
+      visibleCols[0] ?? 1,
+      ...colBreaks
+        .map((col) => visibleCols[visibleCols.indexOf(col) + 1])
+        .filter((col): col is number => col != null),
+    ];
 
     ctx.save();
     ctx.fillStyle = '#FFFFFF';
@@ -1689,10 +1953,10 @@ export class CanvasRenderer {
 
     for (let pi = 0; pi < rowStarts.length; pi++) {
       const startRow = rowStarts[pi];
-      const endRow = pi < rowBreaks.length ? rowBreaks[pi] : (this.getVisibleRows().at(-1) ?? startRow);
+      const endRow = pi < rowBreaks.length ? rowBreaks[pi] : (visibleRows[visibleRows.length - 1] ?? startRow);
       for (let pj = 0; pj < colStarts.length; pj++) {
         const startCol = colStarts[pj];
-        const endCol = pj < colBreaks.length ? colBreaks[pj] : this.sheet.colCount;
+        const endCol = pj < colBreaks.length ? colBreaks[pj] : (visibleCols[visibleCols.length - 1] ?? startCol);
         const rect = this.rectForRange(startRow, startCol, endRow, endCol);
         if (!rect) continue;
         const pageX = rect.x - metrics.marginLeftPx;
@@ -1742,15 +2006,27 @@ export class CanvasRenderer {
       ctx.font = `10px ${this.theme.fontFamily}`;
       ctx.fillStyle = '#666666';
 
-      const rowStarts = [this.getVisibleRows()[0] ?? 1, ...rowBreaks.map((r) => r + 1)];
-      const colStarts = [1, ...colBreaks.map((c) => c + 1)];
+      const visibleRows = this.getVisibleRows();
+      const visibleCols = this.getVisibleCols();
+      const rowStarts = [
+        visibleRows[0] ?? 1,
+        ...rowBreaks
+          .map((row) => visibleRows[visibleRows.indexOf(row) + 1])
+          .filter((row): row is number => row != null),
+      ];
+      const colStarts = [
+        visibleCols[0] ?? 1,
+        ...colBreaks
+          .map((col) => visibleCols[visibleCols.indexOf(col) + 1])
+          .filter((col): col is number => col != null),
+      ];
 
       for (let pi = 0; pi < rowStarts.length; pi++) {
         const startRow = rowStarts[pi];
-        const endRow = pi < rowBreaks.length ? rowBreaks[pi] : (this.getVisibleRows().at(-1) ?? startRow);
+        const endRow = pi < rowBreaks.length ? rowBreaks[pi] : (visibleRows[visibleRows.length - 1] ?? startRow);
         for (let pj = 0; pj < colStarts.length; pj++) {
           const startCol = colStarts[pj];
-          const endCol = pj < colBreaks.length ? colBreaks[pj] : this.sheet.colCount;
+          const endCol = pj < colBreaks.length ? colBreaks[pj] : (visibleCols[visibleCols.length - 1] ?? startCol);
           const rect = this.rectForRange(startRow, startCol, endRow, endCol);
           if (!rect) continue;
 
@@ -1863,11 +2139,13 @@ export class CanvasRenderer {
     const lastRowIndexExclusive = this.upperBound(this.visibleRowsCache, r2);
     if (firstRowIndex >= lastRowIndexExclusive) return null;
 
-    const leftCol = Math.max(1, Math.min(c1, this.sheet.colCount));
-    const rightCol = Math.max(leftCol, Math.min(c2, this.sheet.colCount));
-    const vx = headerWidth - this.scrollX + this.colLeftsCache[leftCol - 1];
+    const firstColIndex = this.lowerBound(this.visibleColsCache, c1);
+    const lastColIndexExclusive = this.upperBound(this.visibleColsCache, c2);
+    if (firstColIndex >= lastColIndexExclusive) return null;
+
+    const vx = headerWidth - this.scrollX + this.colLeftsCache[firstColIndex];
     const vy = headerHeight - this.scrollY + this.rowTopsCache[firstRowIndex];
-    const w = this.colLeftsCache[rightCol] - this.colLeftsCache[leftCol - 1];
+    const w = this.colLeftsCache[lastColIndexExclusive] - this.colLeftsCache[firstColIndex];
     const h = this.rowTopsCache[lastRowIndexExclusive] - this.rowTopsCache[firstRowIndex];
     if (vx + w < headerWidth || vy + h < headerHeight) return null; // off-screen
     return { x: vx, y: vy, w, h };
@@ -1942,11 +2220,12 @@ export class CanvasRenderer {
     if (y <= headerHeight && x >= headerWidth) {
       // Column header area - check resize handles first
       const contentX = x - headerWidth + this.scrollX;
-      const col = this.columnIndexAt(contentX);
-      if (col == null) return null;
-      const left = this.colLeftsCache[col - 1];
-      const right = this.colLeftsCache[col];
-      if (col > 1 && Math.abs(contentX - left) <= threshold) return { type: 'col-resize', col: col - 1 };
+      const colIndex = this.visibleColumnIndexAt(contentX);
+      if (colIndex == null) return null;
+      const col = this.visibleColsCache[colIndex];
+      const left = this.colLeftsCache[colIndex];
+      const right = this.colLeftsCache[colIndex + 1];
+      if (colIndex > 0 && Math.abs(contentX - left) <= threshold) return { type: 'col-resize', col: this.visibleColsCache[colIndex - 1] };
       if (Math.abs(contentX - right) <= threshold) return { type: 'col-resize', col };
       return { type: 'header-col', col };
     }
@@ -2351,8 +2630,8 @@ export class CanvasRenderer {
     const paddingBottom = 4; // px
     const totalVerticalPadding = paddingTop + paddingBottom; // 6px total
     
-    // Scan all columns for max content height in this row
-    for (let col = 1; col <= Math.min(this.sheet.colCount, 100); col++) {
+    // Scan visible columns for max content height in this row
+    for (const col of this.getVisibleCols().slice(0, 100)) {
       const addr = { row, col };
       const cell = this.sheet.getCell(addr);
       if (!cell) continue;
@@ -2521,13 +2800,14 @@ export class CanvasRenderer {
   scrollToCell(addr: Address, align: 'start' | 'center' | 'end' | 'nearest' = 'nearest'): void {
     this.ensureLayoutCache();
     // Calculate cell position in content space
-    const col = Math.max(1, Math.min(addr.col, this.sheet.colCount));
+    const colIndex = this.visibleColIndexCache.get(addr.col);
+    if (colIndex == null) return;
     const rowIndex = this.lowerBound(this.visibleRowsCache, addr.row);
     if (rowIndex >= this.visibleRowsCache.length || this.visibleRowsCache[rowIndex] !== addr.row) return;
 
-    const cellX = this.colLeftsCache[col - 1];
+    const cellX = this.colLeftsCache[colIndex];
     const cellY = this.rowTopsCache[rowIndex];
-    const cellWidth = this.colLeftsCache[col] - this.colLeftsCache[col - 1];
+    const cellWidth = this.colLeftsCache[colIndex + 1] - this.colLeftsCache[colIndex];
     const cellHeight = this.rowTopsCache[rowIndex + 1] - this.rowTopsCache[rowIndex];
     const viewport = this.getViewportSize();
     
@@ -2578,7 +2858,7 @@ export class CanvasRenderer {
     this.ensureLayoutCache();
     const lastRowIndex = this.visibleRowIndexAt(this.scrollY + viewport.height) ?? Math.max(0, this.visibleRowsCache.length - 1);
     const lastRow = this.visibleRowsCache[Math.min(lastRowIndex, this.visibleRowsCache.length - 1)] ?? firstRow;
-    const lastCol = this.columnIndexAt(this.scrollX + viewport.width) ?? this.sheet.colCount;
+    const lastCol = this.columnIndexAt(this.scrollX + viewport.width) ?? this.visibleColsCache[this.visibleColsCache.length - 1] ?? firstCol;
     
     return {
       start: { row: firstRow, col: firstCol },

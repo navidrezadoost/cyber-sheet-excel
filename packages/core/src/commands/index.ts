@@ -75,7 +75,7 @@ export type {
 export {
   DeleteDrawingObjectsCommand,
   CopyDrawingObjectsCommand,
-  MoveDrawingObjectCommand,
+  MoveDrawingObjectsCommand,
   ResizeDrawingObjectCommand,
   RotateDrawingObjectCommand,
   AddDrawingObjectCommand,

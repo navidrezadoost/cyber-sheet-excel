@@ -14,7 +14,7 @@
 
 import type { Command } from '../CommandManager';
 import type { Worksheet } from '../worksheet';
-import type { Address, AutoFilterRange, CellValue, ColumnFilter } from '../types';
+import type { Address, AutoFilterRange, CellValue, ColumnFilter, ExtendedCellValue } from '../types';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -671,7 +671,7 @@ export interface AutoSumPlan {
 interface AutoSumCellSnapshot {
   addr: Address;
   formula: string;
-  value: CellValue;
+  value: ExtendedCellValue;
 }
 
 /**

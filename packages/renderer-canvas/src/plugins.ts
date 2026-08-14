@@ -1,4 +1,4 @@
-import { Address, CellValue, CellStyle } from '@cyber-sheet/core';
+import type { Address, CellStyle, ExtendedCellValue } from '@cyber-sheet/core';
 
 /**
  * Plugin system for extending renderer capabilities
@@ -6,17 +6,23 @@ import { Address, CellValue, CellStyle } from '@cyber-sheet/core';
 
 export type ColorTransformFn = (color: string, context: {
   addr: Address;
-  value: CellValue;
+  value: ExtendedCellValue;
   style?: CellStyle;
 }) => string;
 
 export type CellColorFn = (context: {
   addr: Address;
-  value: CellValue;
+  value: ExtendedCellValue;
   style?: CellStyle;
   min?: number;
   max?: number;
 }) => string | undefined;
+
+type RenderCellContext = {
+  addr: Address;
+  value: ExtendedCellValue;
+  style?: CellStyle;
+};
 
 export type AccessibilityMode = 'none' | 'high-contrast' | 'deuteranopia' | 'protanopia' | 'tritanopia';
 
@@ -25,16 +31,16 @@ export interface RenderPlugin {
   priority?: number; // higher runs later
   
   // Color grading: transform any color before rendering
-  transformColor?(color: string, context: { addr: Address; value: CellValue; style?: CellStyle }): string;
+  transformColor?(color: string, context: RenderCellContext): string;
   
   // Heatmap: compute background color based on cell value
-  getCellBackground?(context: { addr: Address; value: CellValue; style?: CellStyle; min?: number; max?: number }): string | undefined;
+  getCellBackground?(context: RenderCellContext & { min?: number; max?: number }): string | undefined;
   
   // Custom font: override font string
-  transformFont?(font: string, context: { addr: Address; value: CellValue; style?: CellStyle }): string;
+  transformFont?(font: string, context: RenderCellContext): string;
   
   // Post-render hook for overlays
-  afterCellRender?(ctx: CanvasRenderingContext2D, rect: { x: number; y: number; w: number; h: number }, context: { addr: Address; value: CellValue; style?: CellStyle }): void;
+  afterCellRender?(ctx: CanvasRenderingContext2D, rect: { x: number; y: number; w: number; h: number }, context: RenderCellContext): void;
 }
 
 /**
@@ -262,7 +268,7 @@ export class HeatmapPlugin implements RenderPlugin {
     this.colorScale = scale;
   }
   
-  getCellBackground(context: { addr: Address; value: CellValue; style?: CellStyle; min?: number; max?: number }): string | undefined {
+  getCellBackground(context: RenderCellContext & { min?: number; max?: number }): string | undefined {
     if (!this.enabled) return undefined;
     const { value, min = 0, max = 100 } = context;
     if (typeof value !== 'number') return undefined;
