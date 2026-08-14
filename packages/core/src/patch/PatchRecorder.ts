@@ -369,7 +369,7 @@ export function recordingApplyPatch(
       case 'setCellStyle': {
         const styleKey = `${op.row}:${op.col}:style`;
         if (!recorder._beforeStyleMap.has(styleKey)) {
-          const style = ws.getCellStyle({ row: op.row, col: op.col });
+          const style = ws.getDirectCellStyle({ row: op.row, col: op.col });
           recorder._beforeStyleMap.set(styleKey, style !== undefined ? deepCloneStyle(style) : undefined);
         }
         break;

@@ -18,6 +18,17 @@ export {
   AutoSumCommand,
 } from './DataCommands';
 
+// Worksheet Structure Commands
+export {
+  InsertRowsCommand,
+  InsertColumnsCommand,
+  ReorderRowsCommand,
+  ReorderColumnsCommand,
+  SetRowStyleCommand,
+  SetColumnStyleCommand,
+  InsertImageCommand,
+} from './WorksheetCommands';
+
 export type {
   Range,
   SortLevel,

@@ -15,6 +15,17 @@
 
 // ─── Base Drawing Object Interface ─────────────────────────────────────────
 
+export type ImagePlacement = 'cell' | 'floating';
+
+export interface CellImageAnchor {
+  row: number;
+  col: number;
+  endRow?: number;
+  endCol?: number;
+  offsetX?: number;
+  offsetY?: number;
+}
+
 export interface DrawingObject {
   id: string;
   type: 'picture' | 'shape' | 'icon' | 'formControl' | 'chart' | 'textBox' | 'slicer' | 'timeline';
@@ -42,6 +53,9 @@ export interface PictureObject extends DrawingObject {
   sourceType: 'dataUri' | 'blob' | 'url' | 'stockImage' | 'svg';
   naturalWidth: number;
   naturalHeight: number;
+  placement?: ImagePlacement;
+  cellAnchor?: CellImageAnchor;
+  clipToCell?: boolean;
   loadedImage?: HTMLImageElement; // Cached loaded image for rendering
   cropSettings?: {
     top: number;
@@ -216,6 +230,23 @@ export interface SerializedDrawingLayer {
   zOrder: string[];
 }
 
+export interface AddPictureOptions {
+  id?: string;
+  name?: string;
+  source: string;
+  sourceType?: PictureObject['sourceType'];
+  naturalWidth?: number;
+  naturalHeight?: number;
+  position?: { x: number; y: number };
+  size?: { width: number; height: number };
+  placement?: ImagePlacement;
+  cellAnchor?: CellImageAnchor;
+  clipToCell?: boolean;
+  altText?: string;
+  locked?: boolean;
+  visible?: boolean;
+}
+
 export class DrawingLayer {
   private objects: Map<string, DrawingObject> = new Map();
   private zOrder: string[] = []; // Object IDs in z-order (back to front)
@@ -224,6 +255,44 @@ export class DrawingLayer {
   private nextObjectId: number = 1;
 
   // ── CRUD ──────────────────────────────────────────────────────────────────
+
+  addPicture(options: AddPictureOptions): PictureObject {
+    const naturalWidth = options.naturalWidth ?? options.size?.width ?? 0;
+    const naturalHeight = options.naturalHeight ?? options.size?.height ?? 0;
+    const picture: PictureObject = {
+      id: options.id ?? '',
+      type: 'picture',
+      name: options.name ?? 'Picture',
+      source: options.source,
+      sourceType: options.sourceType ?? 'url',
+      naturalWidth,
+      naturalHeight,
+      position: options.position ?? { x: 0, y: 0 },
+      size: options.size ?? {
+        width: naturalWidth,
+        height: naturalHeight,
+      },
+      rotation: 0,
+      zIndex: this.zOrder.length + 1,
+      locked: options.locked ?? false,
+      visible: options.visible ?? true,
+      altText: options.altText ?? '',
+      placement: options.placement ?? (options.cellAnchor ? 'cell' : 'floating'),
+      cellAnchor: options.cellAnchor ? { ...options.cellAnchor } : undefined,
+      clipToCell: options.clipToCell ?? Boolean(options.cellAnchor),
+      anchor: options.cellAnchor
+        ? {
+            moveWithCells: true,
+            resizeWithCells: options.clipToCell ?? true,
+            colOffset: options.cellAnchor.offsetX ?? 0,
+            rowOffset: options.cellAnchor.offsetY ?? 0,
+          }
+        : undefined,
+    };
+
+    this.addObject(picture);
+    return picture;
+  }
 
   addObject(obj: DrawingObject): void {
     if (!obj.id) {
@@ -458,6 +527,7 @@ export class DrawingLayer {
       this.objects.set(obj.id, obj);
     }
     this.zOrder = [...data.zOrder];
+    this.nextObjectId = this.getNextGeneratedId();
 
     this.eventEmitter.emit('changed');
   }
@@ -483,6 +553,15 @@ export class DrawingLayer {
 
   private generateId(): string {
     return `obj_${this.nextObjectId++}`;
+  }
+
+  private getNextGeneratedId(): number {
+    let max = 0;
+    for (const id of this.objects.keys()) {
+      const match = /^obj_(\d+)$/.exec(id);
+      if (match) max = Math.max(max, Number(match[1]));
+    }
+    return max + 1;
   }
 
   getObjectCount(): number {

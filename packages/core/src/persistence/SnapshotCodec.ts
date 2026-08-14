@@ -79,6 +79,7 @@
  */
 
 import type { Cell, MergedRegion, Address, CellStyle, CellComment, CellIcon } from '../types';
+import type { SerializedDrawingLayer } from '../DrawingLayer';
 
 // ---------------------------------------------------------------------------
 // Snapshot types (plain objects — no class instances)
@@ -112,12 +113,26 @@ export type WorksheetSnapshot = {
   version: number;
   /** All populated cells. */
   cells: CellEntry[];
+  /** Worksheet row count. Optional for v1/v2 binary compatibility. */
+  rowCount?: number;
+  /** Worksheet column count. Optional for v1/v2 binary compatibility. */
+  colCount?: number;
   /** All merged regions. */
   merges: MergedRegion[];
   /** Indices of hidden rows (1-based). */
   hiddenRows: number[];
   /** Indices of hidden columns (1-based). */
   hiddenCols: number[];
+  /** Explicit row heights. Optional for v1/v2 binary compatibility. */
+  rowHeights?: Array<{ row: number; height: number }>;
+  /** Explicit column widths. Optional for v1/v2 binary compatibility. */
+  columnWidths?: Array<{ col: number; width: number }>;
+  /** Whole-row default styles. Optional for v1/v2 binary compatibility. */
+  rowStyles?: Array<{ row: number; style: CellStyle }>;
+  /** Whole-column default styles. Optional for v1/v2 binary compatibility. */
+  columnStyles?: Array<{ col: number; style: CellStyle }>;
+  /** Floating and cell-bound drawing objects. Optional for v1/v2 binary compatibility. */
+  drawings?: SerializedDrawingLayer;
   /** Formula dependency edges (predecessors). Successors are derived. */
   dagEdges: DagEdge[];
   /** Volatile cell registrations (e.g., NOW, RAND). */

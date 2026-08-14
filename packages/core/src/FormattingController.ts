@@ -43,7 +43,7 @@ class SetStyleCommand implements Command {
   constructor(worksheet: Worksheet, address: Address, newStyle: CellStyle | undefined) {
     this.worksheet = worksheet;
     this.address = address;
-    this.previousStyle = worksheet.getCellStyle(address);
+    this.previousStyle = worksheet.getDirectCellStyle(address);
     this.newStyle = newStyle;
   }
   
@@ -57,8 +57,7 @@ class SetStyleCommand implements Command {
     if (this.previousStyle) {
       this.worksheet.setCellStyle(this.address, this.previousStyle);
     } else {
-      // Remove style if there wasn't one before
-      this.worksheet.setCellStyle(this.address, {});
+      this.worksheet.setCellStyle(this.address, undefined);
     }
   }
 }
@@ -82,7 +81,7 @@ class BatchSetStyleCommand implements Command {
       let newStyle: CellStyle;
       
       if (typeof styleOrFn === 'function') {
-        const prevStyle = worksheet.getCellStyle(addr);
+        const prevStyle = worksheet.getDirectCellStyle(addr);
         newStyle = styleOrFn(prevStyle, addr);
       } else {
         newStyle = styleOrFn;
@@ -129,7 +128,7 @@ class MergeCellsCommand implements Command {
         const addr = { row: r, col: c };
         this.removedCells.set(key, {
           value: worksheet.getCellValue(addr),
-          style: worksheet.getCellStyle(addr),
+          style: worksheet.getDirectCellStyle(addr),
         });
       }
     }
@@ -572,7 +571,7 @@ export class FormattingController {
       
       if (Object.keys(border).length > 0) {
         const cmd = new SetStyleCommand(this.worksheet, addr, {
-          ...this.worksheet.getCellStyle(addr),
+          ...this.worksheet.getDirectCellStyle(addr),
           border,
         });
         this.commandManager.execute(cmd);

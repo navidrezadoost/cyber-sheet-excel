@@ -18,6 +18,14 @@ import type { IMergeStore } from './storage/MergeStore';
 import { MergeStoreV1, MergeConflictError } from './storage/MergeStore';
 import type { IVisibilityStore } from './storage/VisibilityStore';
 import { VisibilityStoreV1 } from './storage/VisibilityStore';
+import { FormulaShiftingService } from './FormulaShiftingService';
+import {
+  DrawingLayer,
+  type AddPictureOptions,
+  type DrawingObject,
+  type PictureObject,
+  type SerializedDrawingLayer,
+} from './DrawingLayer';
 import {
   DependencyGraph,
   RecalcCoordinator,
@@ -39,12 +47,17 @@ export type { WorksheetSnapshot } from './persistence/SnapshotCodec';
 export const DEFAULT_WORKSHEET_ROWS = 5000;
 export const DEFAULT_WORKSHEET_COLS = 16384;
 
+type IndexMapper = (index: number) => number | null;
+
 export class Worksheet {
   readonly name: string;
   /** Cell store — ICellStore boundary; swap implementation without touching any other Worksheet code. */
   private cells: ICellStore = new ColumnarCellStore();
   private colWidths = new Map<number, number>(); // px
   private rowHeights = new Map<number, number>(); // px
+  private columnStyles = new Map<number, CellStyle>();
+  private rowStyles = new Map<number, CellStyle>();
+  private drawingLayer = new DrawingLayer();
   /** Data validation rules, keyed by "row:col". */
   private validationStore = new Map<string, DataValidationRule>();
   /** Sheet-level protection settings, or null when not protected. */
@@ -470,8 +483,19 @@ export class Worksheet {
     this._emitOrBuffer({ type: 'spill-batch-changed', changes: eventChanges });
   }
 
-  getCellStyle(addr: Address): CellStyle | undefined {
+  getDirectCellStyle(addr: Address): CellStyle | undefined {
     return this.getCell(addr)?.style;
+  }
+
+  getCellStyle(addr: Address): CellStyle | undefined {
+    return this.getEffectiveCellStyle(addr);
+  }
+
+  getEffectiveCellStyle(addr: Address): CellStyle | undefined {
+    const columnStyle = this.columnStyles.get(addr.col);
+    const rowStyle = this.rowStyles.get(addr.row);
+    const cellStyle = this.getDirectCellStyle(addr);
+    return this.mergeStyles(columnStyle, rowStyle, cellStyle);
   }
 
   setCellStyle(addr: Address, style: CellStyle | undefined): void {
@@ -481,15 +505,48 @@ export class Worksheet {
 
     const c = this.ensureCell(addr);
 
-    // Auto-intern through workbook StyleCache (entropy-resistant boundary)
-    // Protects against XLSX import, UI mutations, and spread operators
-    let internedStyle = style;
-    if (style && this.workbook?.getStyleCache) {
-      internedStyle = this.workbook.getStyleCache().intern(style);
-    }
+    const internedStyle = this.internStyle(style);
 
     c.style = internedStyle; // Reference to canonical style (not a copy)
     this._emitOrBuffer({ type: 'style-changed', address: addr, style: internedStyle });
+  }
+
+  getRowStyle(row: number): CellStyle | undefined {
+    return this.rowStyles.get(row);
+  }
+
+  setRowStyle(row: number, style: CellStyle | undefined): void {
+    if (!this._inTransaction) {
+      return this.runTransaction(() => this.setRowStyle(row, style));
+    }
+
+    const internedStyle = this.internStyle(style);
+    if (internedStyle) this.rowStyles.set(row, internedStyle);
+    else this.rowStyles.delete(row);
+    this._emitOrBuffer({ type: 'sheet-mutated' });
+  }
+
+  clearRowStyle(row: number): void {
+    this.setRowStyle(row, undefined);
+  }
+
+  getColumnStyle(col: number): CellStyle | undefined {
+    return this.columnStyles.get(col);
+  }
+
+  setColumnStyle(col: number, style: CellStyle | undefined): void {
+    if (!this._inTransaction) {
+      return this.runTransaction(() => this.setColumnStyle(col, style));
+    }
+
+    const internedStyle = this.internStyle(style);
+    if (internedStyle) this.columnStyles.set(col, internedStyle);
+    else this.columnStyles.delete(col);
+    this._emitOrBuffer({ type: 'sheet-mutated' });
+  }
+
+  clearColumnStyle(col: number): void {
+    this.setColumnStyle(col, undefined);
   }
 
   // ==================== Conditional Formatting ====================
@@ -963,6 +1020,98 @@ export class Worksheet {
   setColumnWidth(col: number, px: number): void { this.colWidths.set(col, px); this.events.emit({ type: 'sheet-mutated' }); }
   getRowHeight(row: number): number { return this.rowHeights.get(row) ?? 20; }
   setRowHeight(row: number, px: number): void { this.rowHeights.set(row, px); this.events.emit({ type: 'sheet-mutated' }); }
+
+  insertRows(rowIndex: number, count = 1): void {
+    this.validateInsertArgs(rowIndex, count, this.rowCount, 'row');
+    if (!this._inTransaction) {
+      return this.runTransaction(() => this.insertRows(rowIndex, count));
+    }
+
+    const rowMapper: IndexMapper = row => row >= rowIndex ? row + count : row;
+    const colMapper: IndexMapper = col => col;
+    this.remapWorksheetState({
+      mapRowIndex: rowMapper,
+      mapColumnIndex: colMapper,
+      transformFormula: formula => FormulaShiftingService.adjustForRowInsertion(formula, rowIndex, count),
+    });
+    this.rowCount += count;
+    this._emitOrBuffer({ type: 'sheet-mutated' });
+  }
+
+  insertColumns(colIndex: number, count = 1): void {
+    this.validateInsertArgs(colIndex, count, this.colCount, 'column');
+    if (!this._inTransaction) {
+      return this.runTransaction(() => this.insertColumns(colIndex, count));
+    }
+
+    const rowMapper: IndexMapper = row => row;
+    const colMapper: IndexMapper = col => col >= colIndex ? col + count : col;
+    this.remapWorksheetState({
+      mapRowIndex: rowMapper,
+      mapColumnIndex: colMapper,
+      transformFormula: formula => FormulaShiftingService.adjustForColumnInsertion(formula, colIndex, count),
+    });
+    this.colCount += count;
+    this._emitOrBuffer({ type: 'sheet-mutated' });
+  }
+
+  reorderRows(fromIndex: number, toIndex: number, count = 1): void {
+    this.validateReorderArgs(fromIndex, toIndex, count, this.rowCount, 'row');
+    if (fromIndex === toIndex || (toIndex >= fromIndex && toIndex < fromIndex + count)) return;
+    if (!this._inTransaction) {
+      return this.runTransaction(() => this.reorderRows(fromIndex, toIndex, count));
+    }
+
+    const rowMapper: IndexMapper = row => FormulaShiftingService.mapReorderedIndex(row, fromIndex, toIndex, count);
+    const colMapper: IndexMapper = col => col;
+    this.remapWorksheetState({
+      mapRowIndex: rowMapper,
+      mapColumnIndex: colMapper,
+      transformFormula: formula => FormulaShiftingService.adjustForRowReorder(formula, fromIndex, toIndex, count),
+    });
+    this._emitOrBuffer({ type: 'sheet-mutated' });
+  }
+
+  reorderColumns(fromIndex: number, toIndex: number, count = 1): void {
+    this.validateReorderArgs(fromIndex, toIndex, count, this.colCount, 'column');
+    if (fromIndex === toIndex || (toIndex >= fromIndex && toIndex < fromIndex + count)) return;
+    if (!this._inTransaction) {
+      return this.runTransaction(() => this.reorderColumns(fromIndex, toIndex, count));
+    }
+
+    const rowMapper: IndexMapper = row => row;
+    const colMapper: IndexMapper = col => FormulaShiftingService.mapReorderedIndex(col, fromIndex, toIndex, count);
+    this.remapWorksheetState({
+      mapRowIndex: rowMapper,
+      mapColumnIndex: colMapper,
+      transformFormula: formula => FormulaShiftingService.adjustForColumnReorder(formula, fromIndex, toIndex, count),
+    });
+    this._emitOrBuffer({ type: 'sheet-mutated' });
+  }
+
+  getDrawingLayer(): DrawingLayer {
+    return this.drawingLayer;
+  }
+
+  insertImage(options: AddPictureOptions): PictureObject {
+    const picture = this.drawingLayer.addPicture(options);
+    this._emitOrBuffer({ type: 'sheet-mutated' });
+    return picture;
+  }
+
+  getImages(): PictureObject[] {
+    return this.drawingLayer
+      .getAllObjects()
+      .filter((obj): obj is PictureObject => obj.type === 'picture');
+  }
+
+  deleteImage(id: string): PictureObject | undefined {
+    const image = this.drawingLayer.getObject(id);
+    if (!image || image.type !== 'picture') return undefined;
+    const removed = this.drawingLayer.removeObject(id);
+    if (removed) this._emitOrBuffer({ type: 'sheet-mutated' });
+    return removed as PictureObject | undefined;
+  }
 
   setFormulaEngine(engine?: IFormulaEngine) { this.formulaEngine = engine; }
 
@@ -2189,9 +2338,10 @@ export class Worksheet {
   /**
    * Extract all serialisable Worksheet state into a plain object.
    *
-   * Captures: cells, merges, visibility (hidden rows/cols), DAG dependency edges,
-   * and volatile registrations.  Does NOT capture: column widths, row heights,
-   * column filters, conditional formatting rules, or formula engine reference.
+   * Captures: cells, merges, visibility (hidden rows/cols), row/column sizing,
+   * whole-row/whole-column styles, drawings, DAG dependency edges, and volatile
+   * registrations. Does NOT capture: column filters, conditional formatting
+   * rules, or formula engine reference.
    *
    * Typical usage:
    * ```ts
@@ -2203,7 +2353,7 @@ export class Worksheet {
    */
   extractSnapshot(): WorksheetSnapshot {
     const cells: WorksheetSnapshot['cells'] = [];
-    this.cells.forEach((row, col, cell) => cells.push({ row, col, cell }));
+    this.cells.forEach((row, col, cell) => cells.push({ row, col, cell: this.cloneCell(cell) }));
 
     const dagEdges: WorksheetSnapshot['dagEdges'] = [];
     this.recalcCoordinator.forEachFormula((row, col, deps) => {
@@ -2212,10 +2362,17 @@ export class Worksheet {
 
     return {
       version:    FORMAT_VERSION,
+      rowCount:   this.rowCount,
+      colCount:   this.colCount,
       cells,
       merges:     this.mergeStore.getAll(),
       hiddenRows: [...this.visibilityStore.getHiddenRows()],
       hiddenCols: [...this.visibilityStore.getHiddenCols()],
+      rowHeights: [...this.rowHeights].map(([row, height]) => ({ row, height })),
+      columnWidths: [...this.colWidths].map(([col, width]) => ({ col, width })),
+      rowStyles: [...this.rowStyles].map(([row, style]) => ({ row, style })),
+      columnStyles: [...this.columnStyles].map(([col, style]) => ({ col, style })),
+      drawings: this.cloneDrawingLayerData(),
       dagEdges,
       volatiles:  this.recalcCoordinator.getVolatileAddresses(),
     };
@@ -2224,10 +2381,9 @@ export class Worksheet {
   /**
    * Replace all Worksheet state with the contents of a snapshot.
    *
-   * Clears the current cell store, merge store, visibility store, and DAG,
-   * then loads each section from the snapshot.  The formula engine reference,
-   * column widths, row heights, column filters, and conditional formatting
-   * rules are NOT touched — they survive the restore.
+   * Clears the current cell store, merge store, visibility store, drawing layer,
+   * and DAG, then loads each section from the snapshot. The formula engine
+   * reference, column filters, and conditional formatting rules are NOT touched.
    *
    * @param snapshot  Plain WorksheetSnapshot produced by extractSnapshot() or
    *                  decoded by SnapshotCodec.decode().
@@ -2238,10 +2394,12 @@ export class Worksheet {
     this.mergeStore     = new MergeStoreV1();
     this.visibilityStore = new VisibilityStoreV1();
     this.dag.clearAll();
+    if (snapshot.rowCount !== undefined) this.rowCount = snapshot.rowCount;
+    if (snapshot.colCount !== undefined) this.colCount = snapshot.colCount;
 
     // ── Restore cells ────────────────────────────────────────────────────
     for (const { row, col, cell } of snapshot.cells) {
-      this.cells.set(row, col, cell);
+      this.cells.set(row, col, this.cloneCell(cell));
     }
 
     // ── Restore merges ───────────────────────────────────────────────────
@@ -2252,6 +2410,25 @@ export class Worksheet {
     // ── Restore visibility ───────────────────────────────────────────────
     for (const row of snapshot.hiddenRows) this.visibilityStore.hideRow(row);
     for (const col of snapshot.hiddenCols) this.visibilityStore.hideCol(col);
+
+    // ── Restore structural styles and dimensions ─────────────────────────
+    if (snapshot.rowHeights) {
+      this.rowHeights = new Map(snapshot.rowHeights.map(({ row, height }) => [row, height]));
+    }
+    if (snapshot.columnWidths) {
+      this.colWidths = new Map(snapshot.columnWidths.map(({ col, width }) => [col, width]));
+    }
+    if (snapshot.rowStyles) {
+      this.rowStyles = new Map(snapshot.rowStyles.map(({ row, style }) => [row, this.internStyle(style)!]));
+    }
+    if (snapshot.columnStyles) {
+      this.columnStyles = new Map(snapshot.columnStyles.map(({ col, style }) => [col, this.internStyle(style)!]));
+    }
+
+    // ── Restore drawings ─────────────────────────────────────────────────
+    if (snapshot.drawings) {
+      this.drawingLayer.deserialize(snapshot.drawings);
+    }
 
     // ── Restore DAG ──────────────────────────────────────────────────────
     for (const { row, col, deps } of snapshot.dagEdges) {
@@ -2266,6 +2443,271 @@ export class Worksheet {
   }
 
   // ==================== Private Helpers ====================
+
+  private validateInsertArgs(index: number, count: number, size: number, axis: 'row' | 'column'): void {
+    if (!Number.isInteger(index) || index < 0 || index > size) {
+      throw new RangeError(`Invalid ${axis} insertion index: ${index}`);
+    }
+    if (!Number.isInteger(count) || count <= 0) {
+      throw new RangeError(`Invalid ${axis} insertion count: ${count}`);
+    }
+  }
+
+  private validateReorderArgs(
+    fromIndex: number,
+    toIndex: number,
+    count: number,
+    size: number,
+    axis: 'row' | 'column'
+  ): void {
+    if (!Number.isInteger(count) || count <= 0) {
+      throw new RangeError(`Invalid ${axis} reorder count: ${count}`);
+    }
+    if (!Number.isInteger(fromIndex) || fromIndex < 0 || fromIndex + count > size) {
+      throw new RangeError(`Invalid ${axis} reorder source: ${fromIndex}`);
+    }
+    if (!Number.isInteger(toIndex) || toIndex < 0 || toIndex + count > size) {
+      throw new RangeError(`Invalid ${axis} reorder destination: ${toIndex}`);
+    }
+  }
+
+  private remapWorksheetState(options: {
+    mapRowIndex: IndexMapper;
+    mapColumnIndex: IndexMapper;
+    transformFormula?: (formula: string) => string;
+  }): void {
+    const mapAddress = (addr: Address): Address | null => {
+      const row = options.mapRowIndex(addr.row);
+      const col = options.mapColumnIndex(addr.col);
+      if (row === null || col === null) return null;
+      return { row, col };
+    };
+
+    const mappedVolatiles = this.recalcCoordinator
+      .getVolatileAddresses()
+      .map(mapAddress)
+      .filter((addr): addr is Address => addr !== null);
+
+    const nextCells: ICellStore = new ColumnarCellStore();
+    this.cells.forEach((row, col, cell) => {
+      const mapped = mapAddress({ row, col });
+      if (!mapped) return;
+
+      const nextCell = this.cloneCell(cell);
+      if (nextCell.formula && options.transformFormula) {
+        nextCell.formula = options.transformFormula(nextCell.formula);
+      }
+      this.remapCellMetadata(nextCell, mapAddress);
+      nextCells.set(mapped.row, mapped.col, nextCell);
+    });
+
+    const nextMerges = this.mergeStore
+      .getAll()
+      .map(region => this.remapMergedRegion(region, options.mapRowIndex, options.mapColumnIndex))
+      .filter((region): region is MergedRegion => region !== null);
+
+    const hiddenRows = [...this.visibilityStore.getHiddenRows()]
+      .map(options.mapRowIndex)
+      .filter((row): row is number => row !== null);
+    const hiddenCols = [...this.visibilityStore.getHiddenCols()]
+      .map(options.mapColumnIndex)
+      .filter((col): col is number => col !== null);
+
+    this.cells = nextCells;
+    this.mergeStore = new MergeStoreV1();
+    for (const region of nextMerges) {
+      this.mergeStore.add(region);
+    }
+
+    this.visibilityStore = new VisibilityStoreV1();
+    for (const row of hiddenRows) this.visibilityStore.hideRow(row);
+    for (const col of hiddenCols) this.visibilityStore.hideCol(col);
+
+    this.rowHeights = this.remapIndexMap(this.rowHeights, options.mapRowIndex);
+    this.colWidths = this.remapIndexMap(this.colWidths, options.mapColumnIndex);
+    this.rowStyles = this.remapIndexMap(this.rowStyles, options.mapRowIndex);
+    this.columnStyles = this.remapIndexMap(this.columnStyles, options.mapColumnIndex);
+    this.remapDrawingAnchors(mapAddress);
+    this.rebuildDependencyGraph(mappedVolatiles);
+  }
+
+  private remapIndexMap<T>(source: Map<number, T>, mapper: IndexMapper): Map<number, T> {
+    const next = new Map<number, T>();
+    for (const [index, value] of source) {
+      const mapped = mapper(index);
+      if (mapped !== null) next.set(mapped, value);
+    }
+    return next;
+  }
+
+  private remapMergedRegion(
+    region: MergedRegion,
+    rowMapper: IndexMapper,
+    colMapper: IndexMapper
+  ): MergedRegion | null {
+    const rows = this.remapIndexSpan(region.startRow, region.endRow, rowMapper);
+    const cols = this.remapIndexSpan(region.startCol, region.endCol, colMapper);
+    if (!rows || !cols) return null;
+    if (rows.min === rows.max && cols.min === cols.max) return null;
+    return {
+      startRow: rows.min,
+      startCol: cols.min,
+      endRow: rows.max,
+      endCol: cols.max,
+    };
+  }
+
+  private remapIndexSpan(
+    start: number,
+    end: number,
+    mapper: IndexMapper
+  ): { min: number; max: number } | null {
+    let min = Infinity;
+    let max = -Infinity;
+    for (let index = start; index <= end; index++) {
+      const mapped = mapper(index);
+      if (mapped === null) return null;
+      min = Math.min(min, mapped);
+      max = Math.max(max, mapped);
+    }
+    return min === Infinity ? null : { min, max };
+  }
+
+  private remapCellMetadata(cell: Cell, mapAddress: (addr: Address) => Address | null): void {
+    if (cell.spillSource) {
+      const endAddress = mapAddress(cell.spillSource.endAddress);
+      cell.spillSource = endAddress
+        ? { ...cell.spillSource, endAddress }
+        : undefined;
+    }
+
+    if (cell.spilledFrom) {
+      cell.spilledFrom = mapAddress(cell.spilledFrom) ?? undefined;
+    }
+  }
+
+  private remapDrawingAnchors(mapAddress: (addr: Address) => Address | null): void {
+    for (const obj of this.drawingLayer.getAllObjects()) {
+      if (obj.type !== 'picture') continue;
+      const picture = obj as PictureObject;
+      if (!picture.cellAnchor) continue;
+
+      const mappedStart = mapAddress({
+        row: picture.cellAnchor.row,
+        col: picture.cellAnchor.col,
+      });
+      if (!mappedStart) continue;
+
+      const nextAnchor = { ...picture.cellAnchor, row: mappedStart.row, col: mappedStart.col };
+
+      if (picture.cellAnchor.endRow !== undefined || picture.cellAnchor.endCol !== undefined) {
+        const mappedEnd = mapAddress({
+          row: picture.cellAnchor.endRow ?? picture.cellAnchor.row,
+          col: picture.cellAnchor.endCol ?? picture.cellAnchor.col,
+        });
+        if (mappedEnd) {
+          if (picture.cellAnchor.endRow !== undefined) nextAnchor.endRow = mappedEnd.row;
+          if (picture.cellAnchor.endCol !== undefined) nextAnchor.endCol = mappedEnd.col;
+        }
+      }
+
+      picture.cellAnchor = nextAnchor;
+    }
+  }
+
+  private rebuildDependencyGraph(volatileAddresses: Address[]): void {
+    this.dag.clearAll();
+
+    this.cells.forEach((row, col, cell) => {
+      if (!cell.formula) return;
+      try {
+        this.recalcCoordinator.registerFormula(row, col, extractReferences(cell.formula, { row, col }));
+      } catch (error) {
+        console.warn(`Failed to rebuild dependencies from formula at ${row}:${col}:`, error);
+      }
+    });
+
+    const seenVolatiles = new Set<string>();
+    for (const addr of volatileAddresses) {
+      const key = `${addr.row}:${addr.col}`;
+      if (seenVolatiles.has(key)) continue;
+      seenVolatiles.add(key);
+      this.recalcCoordinator.registerVolatile(addr.row, addr.col, []);
+    }
+  }
+
+  private cloneCell(cell: Cell): Cell {
+    return {
+      value: cell.value ?? null,
+      formula: cell.formula,
+      style: cell.style,
+      comments: cell.comments?.map(comment => ({
+        ...comment,
+        position: comment.position ? { ...comment.position } : undefined,
+        richText: comment.richText?.map(run => ({
+          ...run,
+          style: run.style ? { ...run.style } : undefined,
+        })),
+        metadata: comment.metadata ? { ...comment.metadata } : undefined,
+      })),
+      icon: cell.icon ? {
+        ...cell.icon,
+        metadata: cell.icon.metadata ? { ...cell.icon.metadata } : undefined,
+      } : undefined,
+      customComponent: cell.customComponent ? {
+        ...cell.customComponent,
+        props: cell.customComponent.props ? { ...cell.customComponent.props } : undefined,
+      } : undefined,
+      hyperlink: cell.hyperlink ? { ...cell.hyperlink } : undefined,
+      spillSource: cell.spillSource ? {
+        dimensions: [...cell.spillSource.dimensions] as [number, number],
+        endAddress: { ...cell.spillSource.endAddress },
+      } : undefined,
+      spilledFrom: cell.spilledFrom ? { ...cell.spilledFrom } : undefined,
+    };
+  }
+
+  private cloneDrawingLayerData(): SerializedDrawingLayer {
+    const serialized = this.drawingLayer.serialize();
+    return {
+      objects: serialized.objects.map(obj => this.cloneDrawingObject(obj)),
+      zOrder: [...serialized.zOrder],
+    };
+  }
+
+  private cloneDrawingObject<T extends DrawingObject>(obj: T): T {
+    const copy = {
+      ...obj,
+      position: { ...obj.position },
+      size: { ...obj.size },
+      anchor: obj.anchor ? { ...obj.anchor } : undefined,
+    } as T;
+
+    if (copy.type === 'picture') {
+      const picture = copy as unknown as PictureObject;
+      picture.cellAnchor = picture.cellAnchor ? { ...picture.cellAnchor } : undefined;
+      picture.cropSettings = picture.cropSettings ? { ...picture.cropSettings } : undefined;
+      picture.loadedImage = undefined;
+    }
+
+    return copy;
+  }
+
+  private internStyle(style: CellStyle | undefined): CellStyle | undefined {
+    if (style && this.workbook?.getStyleCache) {
+      return this.workbook.getStyleCache().intern(style);
+    }
+    return style;
+  }
+
+  private mergeStyles(...styles: Array<CellStyle | undefined>): CellStyle | undefined {
+    let merged: CellStyle | undefined;
+    for (const style of styles) {
+      if (!style) continue;
+      merged = merged ? { ...merged, ...style } : style;
+    }
+    return merged;
+  }
 
   private generateCommentId(): string {
     return `comment_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;

@@ -42,7 +42,10 @@ export {
   DrawingLayer,
 } from './DrawingLayer';
 export type {
+  AddPictureOptions,
+  CellImageAnchor,
   DrawingObject,
+  ImagePlacement,
   PictureObject,
   ShapeType,
   FillProperties,
@@ -74,6 +77,15 @@ export type {
   Command as DrawingCommand,
   FormControlFormatUpdates,
 } from './commands/DrawingCommands';
+export {
+  InsertRowsCommand,
+  InsertColumnsCommand,
+  ReorderRowsCommand,
+  ReorderColumnsCommand,
+  SetRowStyleCommand,
+  SetColumnStyleCommand,
+  InsertImageCommand,
+} from './commands/WorksheetCommands';
 export {
   SortCommand,
   ToggleAutoFilterCommand,

@@ -22,6 +22,7 @@ import type { Address } from './types';
  */
 const MAX_COL = 16383;
 const MAX_ROW = 1048575;
+const MAX_RANGE_REMAP_SCAN = 10000;
 
 /**
  * Token types for formula parsing
@@ -81,6 +82,8 @@ export interface SheetRefToken {
   ref: CellRefToken | RangeToken;
 }
 
+type ReferenceMapper = (addr: Address) => Address | null;
+
 /**
  * FormulaShiftingService - Token-based reference transformation
  * 
@@ -128,6 +131,90 @@ export class FormulaShiftingService {
 
     // Step 3: Rebuild formula
     return this.rebuild(transformedTokens);
+  }
+
+  /**
+   * Adjust formula references after inserting rows in the worksheet coordinate
+   * space. Absolute references still move structurally, but keep their $ flags.
+   */
+  static adjustForRowInsertion(formula: string, rowIndex: number, count = 1): string {
+    if (count <= 0) return formula;
+    return this.remapReferences(formula, addr => (
+      addr.row >= rowIndex
+        ? { row: addr.row + count, col: addr.col }
+        : addr
+    ));
+  }
+
+  /**
+   * Adjust formula references after inserting columns in the worksheet coordinate
+   * space. Absolute references still move structurally, but keep their $ flags.
+   */
+  static adjustForColumnInsertion(formula: string, colIndex: number, count = 1): string {
+    if (count <= 0) return formula;
+    return this.remapReferences(formula, addr => (
+      addr.col >= colIndex
+        ? { row: addr.row, col: addr.col + count }
+        : addr
+    ));
+  }
+
+  /**
+   * Adjust references after moving a contiguous block of rows. `toIndex` is the
+   * final start index of the moved block after reordering.
+   */
+  static adjustForRowReorder(
+    formula: string,
+    fromIndex: number,
+    toIndex: number,
+    count = 1
+  ): string {
+    if (count <= 0 || fromIndex === toIndex) return formula;
+    return this.remapReferences(formula, addr => ({
+      row: this.mapReorderedIndex(addr.row, fromIndex, toIndex, count),
+      col: addr.col,
+    }));
+  }
+
+  /**
+   * Adjust references after moving a contiguous block of columns. `toIndex` is
+   * the final start index of the moved block after reordering.
+   */
+  static adjustForColumnReorder(
+    formula: string,
+    fromIndex: number,
+    toIndex: number,
+    count = 1
+  ): string {
+    if (count <= 0 || fromIndex === toIndex) return formula;
+    return this.remapReferences(formula, addr => ({
+      row: addr.row,
+      col: this.mapReorderedIndex(addr.col, fromIndex, toIndex, count),
+    }));
+  }
+
+  /**
+   * Map an index through a block move. The destination is the final start index
+   * of the moved block.
+   */
+  static mapReorderedIndex(index: number, fromIndex: number, toIndex: number, count = 1): number {
+    if (count <= 0 || fromIndex === toIndex) return index;
+    const fromEnd = fromIndex + count;
+    if (toIndex >= fromIndex && toIndex < fromEnd) return index;
+
+    if (index >= fromIndex && index < fromEnd) {
+      return toIndex + (index - fromIndex);
+    }
+
+    if (toIndex < fromIndex && index >= toIndex && index < fromIndex) {
+      return index + count;
+    }
+
+    if (toIndex > fromIndex && index >= fromEnd && index < toIndex + count) {
+      return index - count;
+    }
+
+    return index;
   }
 
   /**
@@ -252,6 +339,123 @@ export class FormulaShiftingService {
 
     // All other tokens pass through unchanged
     return token;
+  }
+
+  private static remapReferences(formula: string, mapper: ReferenceMapper): string {
+    try {
+      const tokens = this.tokenize(formula);
+      return this.rebuild(tokens.map(token => this.remapToken(token, mapper)));
+    } catch {
+      return formula;
+    }
+  }
+
+  private static remapToken(token: Token, mapper: ReferenceMapper): Token {
+    if (token.type === 'CELL_REF') {
+      return this.remapCellRef(token, mapper);
+    }
+
+    if (token.type === 'RANGE') {
+      return this.remapRange(token, mapper);
+    }
+
+    if (token.type === 'SHEET_REF') {
+      const ref = token.ref.type === 'RANGE'
+        ? this.remapRange(token.ref, mapper)
+        : this.remapCellRef(token.ref, mapper);
+
+      if (ref.type === 'SYMBOL') return ref;
+      return { ...token, ref };
+    }
+
+    return token;
+  }
+
+  private static remapRange(token: RangeToken, mapper: ReferenceMapper): RangeToken | SymbolToken {
+    const start = this.remapCellRef(token.start, mapper);
+    const end = this.remapCellRef(token.end, mapper);
+    if (start.type === 'SYMBOL' || end.type === 'SYMBOL') {
+      return { type: 'SYMBOL', value: '#REF!' };
+    }
+
+    const rowBounds = this.remapAxisBounds(token.start.row, token.end.row, row => {
+      const mapped = mapper({ row, col: token.start.col });
+      return mapped?.row ?? null;
+    });
+    const colBounds = this.remapAxisBounds(token.start.col, token.end.col, col => {
+      const mapped = mapper({ row: token.start.row, col });
+      return mapped?.col ?? null;
+    });
+
+    if (!rowBounds || !colBounds) return { type: 'SYMBOL', value: '#REF!' };
+
+    const nextStart = this.rebuildCellRef(token.start, rowBounds.min, colBounds.min);
+    const nextEnd = this.rebuildCellRef(token.end, rowBounds.max, colBounds.max);
+    if (nextStart.type === 'SYMBOL' || nextEnd.type === 'SYMBOL') {
+      return { type: 'SYMBOL', value: '#REF!' };
+    }
+
+    return {
+      type: 'RANGE',
+      start: nextStart,
+      end: nextEnd,
+    };
+  }
+
+  private static remapAxisBounds(
+    start: number,
+    end: number,
+    mapper: (index: number) => number | null
+  ): { min: number; max: number } | null {
+    const lo = Math.min(start, end);
+    const hi = Math.max(start, end);
+    if (hi - lo > MAX_RANGE_REMAP_SCAN) {
+      const mappedStart = mapper(lo);
+      const mappedEnd = mapper(hi);
+      if (mappedStart === null || mappedEnd === null) return null;
+      return {
+        min: Math.min(mappedStart, mappedEnd),
+        max: Math.max(mappedStart, mappedEnd),
+      };
+    }
+
+    let min = Infinity;
+    let max = -Infinity;
+
+    for (let i = lo; i <= hi; i++) {
+      const mapped = mapper(i);
+      if (mapped === null) return null;
+      min = Math.min(min, mapped);
+      max = Math.max(max, mapped);
+    }
+
+    return min === Infinity ? null : { min, max };
+  }
+
+  private static remapCellRef(token: CellRefToken, mapper: ReferenceMapper): CellRefToken | SymbolToken {
+    const mapped = mapper({ row: token.row, col: token.col });
+    if (!mapped) return { type: 'SYMBOL', value: '#REF!' };
+    return this.rebuildCellRef(token, mapped.row, mapped.col);
+  }
+
+  private static rebuildCellRef(token: CellRefToken, row: number, col: number): CellRefToken | SymbolToken {
+    if (row < 0 || row > MAX_ROW || col < 0 || col > MAX_COL) {
+      return { type: 'SYMBOL', value: '#REF!' };
+    }
+
+    const colAbs = token.colAbs ? '$' : '';
+    const rowAbs = token.rowAbs ? '$' : '';
+    const colStr = this.columnIndexToLetters(col);
+    const rowStr = (row + 1).toString();
+
+    return {
+      type: 'CELL_REF',
+      value: `${colAbs}${colStr}${rowAbs}${rowStr}`,
+      row,
+      col,
+      rowAbs: token.rowAbs,
+      colAbs: token.colAbs,
+    };
   }
 
   /**

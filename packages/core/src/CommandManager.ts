@@ -186,7 +186,7 @@ export class SetStyleCommand implements Command {
     this.addr = addr;
     
     // Capture current canonical style
-    this.previousStyle = worksheet.getCellStyle(addr);
+    this.previousStyle = worksheet.getDirectCellStyle(addr);
     this.newStyle = newStyle;
   }
   
@@ -258,7 +258,7 @@ export class SetRangeStyleCommand implements Command {
         this.snapshots.push({
           addr,
           value: worksheet.getCellValue(addr),
-          style: worksheet.getCellStyle(addr)  // Canonical pointer
+          style: worksheet.getDirectCellStyle(addr)  // Canonical pointer
         });
       }
     }

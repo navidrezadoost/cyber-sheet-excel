@@ -96,7 +96,7 @@ export class SortCommand implements Command {
       for (let c = startCol; c <= endCol; c++) {
         const addr = { row: r, col: c };
         rowData.set(c, this.worksheet.getCellValue(addr));
-        rowStyles.set(c, this.worksheet.getCellStyle(addr));
+        rowStyles.set(c, this.worksheet.getDirectCellStyle(addr));
       }
 
       rows.push({ rowIndex: r, data: rowData, styles: rowStyles });
@@ -173,7 +173,7 @@ export class SortCommand implements Command {
       for (let c = startCol; c <= endCol; c++) {
         const addr = { row: r, col: c };
         rowData.set(c, this.worksheet.getCellValue(addr));
-        rowStyles.set(c, this.worksheet.getCellStyle(addr));
+        rowStyles.set(c, this.worksheet.getDirectCellStyle(addr));
       }
 
       this.originalData.set(r, rowData);
@@ -445,7 +445,7 @@ export class RemoveDuplicatesCommand implements Command {
       for (let c = startCol; c <= endCol; c++) {
         const addr = { row: r, col: c };
         rowData.set(c, this.worksheet.getCellValue(addr));
-        rowStyles.set(c, this.worksheet.getCellStyle(addr));
+        rowStyles.set(c, this.worksheet.getDirectCellStyle(addr));
       }
 
       this.removedRows.push({ rowIndex: r, data: rowData, styles: rowStyles });
@@ -485,7 +485,7 @@ export class RemoveDuplicatesCommand implements Command {
         const next = { row: r + 1, col: c };
 
         this.worksheet.setCellValue(current, this.worksheet.getCellValue(next));
-        this.worksheet.setCellStyle(current, this.worksheet.getCellStyle(next));
+        this.worksheet.setCellStyle(current, this.worksheet.getDirectCellStyle(next));
       }
     }
   }
@@ -499,7 +499,7 @@ export class RemoveDuplicatesCommand implements Command {
         const prev = { row: r - 1, col: c };
 
         this.worksheet.setCellValue(current, this.worksheet.getCellValue(prev));
-        this.worksheet.setCellStyle(current, this.worksheet.getCellStyle(prev));
+        this.worksheet.setCellStyle(current, this.worksheet.getDirectCellStyle(prev));
       }
     }
   }
@@ -548,7 +548,7 @@ export class TextToColumnsCommand implements Command {
         const key = `${r},${sourceCol + i}`;
 
         this.previousData.set(key, this.worksheet.getCellValue(targetAddr));
-        this.previousStyles.set(key, this.worksheet.getCellStyle(targetAddr));
+        this.previousStyles.set(key, this.worksheet.getDirectCellStyle(targetAddr));
 
         // Write split parts
         this.worksheet.setCellValue(targetAddr, parts[i].trim());

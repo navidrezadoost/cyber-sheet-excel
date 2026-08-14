@@ -853,7 +853,7 @@ class SpreadsheetV1 implements SpreadsheetSDK {
     this._guard('lockCell');
     this._checkBounds(row, col);
     this._guardSheetOp('allowFormatCells', 'lockCell');
-    const before = this._ws.getCellStyle({ row, col });
+    const before = this._ws.getDirectCellStyle({ row, col });
     const after: CellStyle = { ...before, locked: true };
     const patch: WorksheetPatch = {
       seq: 0,
@@ -866,7 +866,7 @@ class SpreadsheetV1 implements SpreadsheetSDK {
     this._guard('unlockCell');
     this._checkBounds(row, col);
     this._guardSheetOp('allowFormatCells', 'unlockCell');
-    const before = this._ws.getCellStyle({ row, col });
+    const before = this._ws.getDirectCellStyle({ row, col });
     const after: CellStyle = { ...before, locked: false };
     const patch: WorksheetPatch = {
       seq: 0,
@@ -890,7 +890,7 @@ class SpreadsheetV1 implements SpreadsheetSDK {
     for (let r = range.start.row; r <= range.end.row; r++) {
       for (let c = range.start.col; c <= range.end.col; c++) {
         this._checkBounds(r, c);
-        const before = this._ws.getCellStyle({ row: r, col: c });
+        const before = this._ws.getDirectCellStyle({ row: r, col: c });
         const after: CellStyle = { ...before, locked: true };
         ops.push({ op: 'setCellStyle' as const, row: r, col: c, before, after });
       }
@@ -905,7 +905,7 @@ class SpreadsheetV1 implements SpreadsheetSDK {
     for (let r = range.start.row; r <= range.end.row; r++) {
       for (let c = range.start.col; c <= range.end.col; c++) {
         this._checkBounds(r, c);
-        const before = this._ws.getCellStyle({ row: r, col: c });
+        const before = this._ws.getDirectCellStyle({ row: r, col: c });
         const after: CellStyle = { ...before, locked: false };
         ops.push({ op: 'setCellStyle' as const, row: r, col: c, before, after });
       }

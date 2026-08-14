@@ -605,12 +605,16 @@ class Workbook {
 class Worksheet {
   setCellValue(pos: CellPosition, value: any): void;
   getCellValue(pos: CellPosition): any;
-  setCellFormat(pos: CellPosition, format: CellFormat): void;
-  getCellFormat(pos: CellPosition): CellFormat;
-  insertColumn(k: number): void;
-  deleteColumn(k: number): void;
-  insertRow(k: number): void;
-  deleteRow(k: number): void;
+  setCellStyle(pos: CellPosition, style: CellStyle | undefined): void;
+  getCellStyle(pos: CellPosition): CellStyle | undefined;
+  getDirectCellStyle(pos: CellPosition): CellStyle | undefined;
+  insertRows(rowIndex: number, count?: number): void;
+  insertColumns(colIndex: number, count?: number): void;
+  reorderRows(fromIndex: number, toIndex: number, count?: number): void;
+  reorderColumns(fromIndex: number, toIndex: number, count?: number): void;
+  setRowStyle(row: number, style: CellStyle | undefined): void;
+  setColumnStyle(col: number, style: CellStyle | undefined): void;
+  insertImage(options: AddPictureOptions): PictureObject;
   getUsedRange(): CellRange;
 }
 
@@ -619,17 +623,29 @@ interface CellPosition {
   col: number;
 }
 
-interface CellFormat {
+interface CellStyle {
   bold?: boolean;
   italic?: boolean;
   fontSize?: number;
   fontFamily?: string;
-  backgroundColor?: string;
-  textColor?: string;
+  fill?: string;
+  color?: string;
   numberFormat?: string;
-  borders?: BorderStyle[];
+  border?: BorderSpec;
+}
+
+interface AddPictureOptions {
+  source: string;
+  sourceType?: 'dataUri' | 'blob' | 'url' | 'stockImage' | 'svg';
+  placement?: 'cell' | 'floating';
+  cellAnchor?: { row: number; col: number; endRow?: number; endCol?: number };
+  position?: { x: number; y: number };
+  size?: { width: number; height: number };
+  clipToCell?: boolean;
 }
 ```
+
+Structural row/column operations remap sparse cells, merged ranges, hidden tracks, row/column defaults, image anchors, and formula references. For undo/redo, use the exported worksheet commands with `CommandManager`: `InsertRowsCommand`, `InsertColumnsCommand`, `ReorderRowsCommand`, `ReorderColumnsCommand`, `SetRowStyleCommand`, `SetColumnStyleCommand`, and `InsertImageCommand`.
 
 ### **Renderer API**
 

@@ -523,9 +523,17 @@ Extends `EventAPI` (`on`, `once`, `off`):
 | `getCell(addr)` | Read cell |
 | `setCellValue(addr, value)` | Write value |
 | `setCellFormula(addr, formula)` | Write formula |
-| `getCellValue(addr)` / `getCellStyle(addr)` | Convenience accessors |
+| `getCellValue(addr)` / `getCellStyle(addr)` | Convenience accessors; `getCellStyle` returns the effective cell style including row/column defaults |
+| `getDirectCellStyle(addr)` | Read only the cell-level style override |
+| `insertRows(rowIndex, count?)` / `insertColumns(colIndex, count?)` | Insert one or more tracks and remap cells, formulas, merges, visibility, sizing, styles, and image anchors |
+| `reorderRows(fromIndex, toIndex, count?)` / `reorderColumns(fromIndex, toIndex, count?)` | Move a contiguous track block for drag-and-drop style interactions |
+| `setRowStyle(row, style)` / `setColumnStyle(col, style)` | Apply dynamic whole-row or whole-column defaults to existing and future cells |
+| `clearRowStyle(row)` / `clearColumnStyle(col)` | Remove whole-row or whole-column defaults |
+| `getDrawingLayer()` / `insertImage(options)` / `getImages()` / `deleteImage(id)` | Manage floating and cell-bound picture metadata |
 | `addComment` / `getComments` / `updateComment` / `deleteComment` | Comment threads |
 | `setCellComponent` / `getCellComponent` / `clearCellComponent` / `getAllCellComponents` | Custom components |
+
+Structural operations update formulas with the same tokenized reference pipeline used by copy/paste, then rebuild dependency metadata from the rewritten formulas. Cell-bound images carry `cellAnchor` metadata and move when row/column tracks are inserted or reordered.
 
 ### `CommandManager`
 
@@ -541,6 +549,38 @@ Extends `EventAPI` (`on`, `once`, `off`):
 | `setEventBus(eventBus)` | Attach bus for command events |
 
 Implement custom undoable operations by creating classes that satisfy the `Command` interface (`execute`, `undo`, optional `description`).
+
+### Worksheet Structure Commands
+
+The core package exports snapshot-backed commands for structural operations:
+
+| Command | Description |
+|---------|-------------|
+| `InsertRowsCommand` / `InsertColumnsCommand` | Undoable track insertion |
+| `ReorderRowsCommand` / `ReorderColumnsCommand` | Undoable drag/drop-style track movement |
+| `SetRowStyleCommand` / `SetColumnStyleCommand` | Undoable dynamic row/column styling |
+| `InsertImageCommand` | Undoable picture insertion |
+
+```typescript
+import {
+  CommandManager,
+  InsertRowsCommand,
+  InsertImageCommand,
+  Worksheet,
+} from '@cyber-sheet/core';
+
+const sheet = new Worksheet('Sheet1');
+const history = new CommandManager(100, sheet);
+
+history.execute(new InsertRowsCommand(sheet, 2, 3));
+history.execute(new InsertImageCommand(sheet, {
+  source: 'data:image/png;base64,...',
+  sourceType: 'dataUri',
+  placement: 'cell',
+  cellAnchor: { row: 2, col: 1 },
+  size: { width: 120, height: 80 },
+}));
+```
 
 ---
 

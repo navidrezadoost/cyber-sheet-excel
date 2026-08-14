@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - Core Engine Row/Column Management, Styling, and History (#93)
+
+- Added native worksheet APIs for inserting rows/columns and reordering row/column blocks, including sparse cell remapping and structural formula reference updates.
+- Added whole-row and whole-column default styles that apply to existing and future cells through effective style resolution.
+- Added cell-bound and floating image metadata to the core drawing layer, with worksheet-level image insertion helpers.
+- Added snapshot-backed worksheet commands for row/column insertion, row/column reordering, row/column styling, and image insertion so these operations participate in undo/redo.
+- Extended worksheet snapshots to preserve row/column counts, row heights, column widths, row/column styles, and drawing objects for reliable history restoration.
+- Added focused regression tests for row/column transforms, dynamic styles, image anchors, and command history.
+
 ### Fixed - Canvas Rendering Updates (#94)
 
 - Skipped hidden rows and columns throughout canvas visible-track layout, hit testing, range geometry, page overlays, and auto-size scans.

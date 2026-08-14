@@ -46,7 +46,7 @@ export class SetHyperlinkCommand implements Command {
     const cell = worksheet.getCell(addr);
     this.previousHyperlink = cell?.hyperlink ? { ...cell.hyperlink } : undefined;
     this.previousValue = worksheet.getCellValue(addr);
-    this.previousStyle = cloneStyle(worksheet.getCellStyle(addr));
+    this.previousStyle = cloneStyle(worksheet.getDirectCellStyle(addr));
 
     this.description = hyperlink
       ? `Set hyperlink on (${addr.row},${addr.col})`
@@ -65,7 +65,7 @@ export class SetHyperlinkCommand implements Command {
       if (displayValue) {
         this.worksheet.setCellValue(this.addr, displayValue);
       }
-      const baseStyle = this.worksheet.getCellStyle(this.addr) ?? styleBeforeLink ?? {};
+      const baseStyle = this.worksheet.getDirectCellStyle(this.addr) ?? styleBeforeLink ?? {};
       this.worksheet.setCellStyle(this.addr, {
         ...baseStyle,
         color: HYPERLINK_COLOR,
@@ -76,7 +76,7 @@ export class SetHyperlinkCommand implements Command {
 
     const existing = this.worksheet.getCell(this.addr)?.hyperlink;
     const restoreStyle = cloneStyle(existing?.previousStyle)
-      ?? stripHyperlinkFormatting(this.worksheet.getCellStyle(this.addr));
+      ?? stripHyperlinkFormatting(this.worksheet.getDirectCellStyle(this.addr));
 
     this.worksheet.setHyperlink(this.addr, undefined);
     this.worksheet.setCellStyle(this.addr, restoreStyle);
