@@ -40,7 +40,7 @@
     "@smilodon/core": "^1.9.1-debug.0",
     "@smilodon/react": "^1.9.1-debug.0",
     "fflate": "^0.8.3",
-    "react": "^19.2.6",
+    "react": "^19.2.8",
     "react-dom": "^19.2.6",
     "vue": "^3.4.0"
   },
