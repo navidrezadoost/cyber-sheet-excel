@@ -24,7 +24,7 @@
   },
   "devDependencies": {
     "svelte": "^5.55.7",
-    "@testing-library/svelte": "^5.3.1",
+    "@testing-library/svelte": "^5.4.2",
     "@testing-library/jest-dom": "^7.0.0",
     "jest-axe": "^11.0.0"
   },
