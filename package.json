@@ -41,7 +41,7 @@
     "@smilodon/react": "^1.9.1-debug.0",
     "fflate": "^0.8.3",
     "react": "^19.2.6",
-    "react-dom": "^19.2.6",
+    "react-dom": "^19.2.8",
     "vue": "^3.4.0"
   },
   "devDependencies": {
