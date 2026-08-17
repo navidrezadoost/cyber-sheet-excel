@@ -36,7 +36,7 @@
     "security:report": "npm audit --json > security-audit-report.json && echo 'Report saved to security-audit-report.json'"
   },
   "dependencies": {
-    "@fluentui/react-icons": "^2.0.325",
+    "@fluentui/react-icons": "^2.0.337",
     "@smilodon/core": "^1.9.1-debug.0",
     "@smilodon/react": "^1.9.1-debug.0",
     "fflate": "^0.8.3",
